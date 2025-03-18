@@ -1,0 +1,55 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/npm/three/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+      
+      //描画対象dom要素を指定
+      const canvasElement = document.querySelector('#myCanvas')
+      
+      // レンダラーを作成
+      const renderer = new THREE.WebGLRenderer({
+        canvas: canvasElement,
+      });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      // シーンを作成 
+      const scene = new THREE.Scene();
+        
+      //わかりやすくするためにzx平面にグリッド表示 サイズ10 分割10
+      var gridHelper = new THREE.GridHelper(10, 10);
+      scene.add(gridHelper);
+
+      // カメラを作成
+      const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
+      camera.position.set(0, 2, -3);
+      
+
+      // 箱を作成
+      const geometry = new THREE.BoxGeometry(1, 1, 1);//形状
+      const material = new THREE.MeshNormalMaterial();//表示材質
+      const box = new THREE.Mesh(geometry, material);//面の生成
+      box.position.set(0,0.5,0);//位置
+      box.rotation.set(0,Math.PI/4,0);//向き
+      scene.add(box);
+
+      //カメラを箱のほうにむける
+      camera.lookAt(box.position);
+
+      //表示 カメラから見たシーンを描画する
+      renderer.render(scene, camera); 
+
+    </script>
+  </head>
+  <body>
+    <canvas id="myCanvas"></canvas>
+  </body>
+</html>
