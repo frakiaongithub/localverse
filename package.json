@@ -1,0 +1,20 @@
+{
+  "name": "2",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.3.4",
+    "express": "^4.21.2",
+    "fs": "^0.0.1-security",
+    "http": "^0.0.1-security",
+    "three": "^0.169.0",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.0"
+  }
+}
