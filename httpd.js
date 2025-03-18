@@ -1,4 +1,19 @@
-const port=80;
+const fs = require('fs');
+const https = require('https');
+
+//ssl証明書
+const options = {
+  key: fs.readFileSync('./ssl/server.key'),
+  cert: fs.readFileSync('./ssl/server.crt')
+}
+
+const PORT = 10443;
+const document_root = "web/";//webコンテンツファイルの実際の配置場所指定
+
+
+//シンボリックリンク張れない場合用のディレクトリ置換設定
+//ここでは上の階層にあるnode_modulesをnpmとしている
+//シンボリックリンクで対応する場合はここの設定は消す
 const aliases = [
   {
     "org":"/npm/",
@@ -6,6 +21,7 @@ const aliases = [
   }
 ];
 const resolve_alias = (url) =>{
+  //エリアスに前方一致する場合は置換する
   for(const alias of aliases){
     if(url.indexOf(alias.org)===0){
       const tail = url.substring(alias.org.length);
@@ -16,55 +32,93 @@ const resolve_alias = (url) =>{
   return url;
 }
 
-const put_resource = (response,resource_path,content_type="text/html")=>{
-  if(fs.existsSync(resource_path)){
-    response.writeHead(200,{
-      "Content-Type": content_type
-    });
-    const data = fs.readFileSync(resource_path);
-    response.end(data);
-  }else{
-    response.writeHead(404, {"Content-Type": "text/plain"});
-    response.write("404 Not Found\n");
-    response.end();
-  }
-}
 
-const fs = require('fs');
-const http = require("http");
-const document_root = "web/";
-const server = http.createServer((request, response) => {
-  console.log(request.url);
+https.createServer(options, (request, response)=>{
+  //console.log(request);
+
   const _url = resolve_alias(request.url);
+  //queryパラメータカットしないとファイル名にならない
   const _arr = _url.split("?");
   const url = _arr[0];
+
   const path = require('path');
   const info = path.parse(url);
-  const local_path = document_root+url.substr(1);
+  var local_path = document_root+url.substr(1);
+  
   if(url=="/" ){
-    const resource_path = document_root+"index.html";
-    put_resource(response,resource_path,"text/html");
+    local_path = document_root+"index.html";
+    if(!fs.existsSync(local_path)){
+      //ない場合
+      response.writeHead(404);
+      response.end();
+    }else{
+      response.writeHead(200,{
+        "Content-Type": "text/html"
+      });
+      const data = fs.readFileSync(local_path);
+      response.end(data);
+
+    }
   }else if(url.endsWith("/")){
-    const resource_path = local_path+"index.html";
-    put_resource(response,resource_path,"text/html");
+    local_path = local_path+"index.html";
+    if(!fs.existsSync(local_path)){
+      //ない場合
+      response.writeHead(404);
+      response.end();
+    }else{
+      response.writeHead(200,{
+        "Content-Type": "text/html"
+      });
+      const data = fs.readFileSync(local_path);
+      response.end(data);
+    }
   }else if(!fs.existsSync(local_path)){
-    put_resource(response,local_path,"text/html");
+    //ない場合
+    response.writeHead(404);
+    response.end();
   } else if(info.ext==".js"){
-    put_resource(response,local_path,"application/javascript");
+    response.writeHead(200,{
+      "Content-Type": "application/javascript"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
   }else if(info.ext==".ico"){
-    put_resource(response,local_path,"image/vnd.microsoft.icon");
+    response.writeHead(200,{
+      "Content-Type": "image/vnd.microsoft.icon"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
   }else if(info.ext==".png"){
-    put_resource(response,local_path,"image/png");
+    response.writeHead(200,{
+      "Content-Type": "image/png"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
   }else if(info.ext==".jpg" || info.ext==".jpeg"){
-    put_resource(response,local_path,"image/jpeg");
-  }else if(info.ext==".txt"){
-    put_resource(response,local_path,"text/plain");
+    response.writeHead(200,{
+      "Content-Type": "image/jpeg"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
+
   }else if(info.ext==".html"){
-    put_resource(response,local_path,"text/html");
+    response.writeHead(200,{
+      "Content-Type": "text/html"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
   }else if(info.ext==".css"){
-    put_resource(response,local_path,"text/css");
+    response.writeHead(200,{
+      "Content-Type": "text/css"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
+
   }else{
-    put_resource(response,local_path,"application/octet-stream");
+    response.writeHead(200,{
+      "Content-Type": "application/octet-stream"
+    });
+    const data = fs.readFileSync(local_path);
+    response.end(data);
   }
-});
-server.listen(port);
+}).listen(PORT);
