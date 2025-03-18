@@ -1,0 +1,732 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/npm/three/build/three.module.js",
+          "three/addons/": "/npm/three/examples/jsm/",
+          "pixiv/three-vrm": "/npm/@pixiv/three-vrm/lib/three-vrm.module.min.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+      import { VRMLoaderPlugin ,VRMUtils} from 'pixiv/three-vrm';
+      import { loadMixamoAnimation } from './loadMixamoAnimation.js';
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { CSS3DRenderer } from "three/addons/renderers/CSS3DRenderer.js";
+      import { CSS3DObject } from "three/addons/renderers/CSS3DRenderer.js";
+      import { CSS3DSprite } from "three/addons/renderers/CSS3DRenderer.js";
+      
+      //awaitを使いたいのでasync関数に入れる。
+      const init = async () =>{
+      
+        const default_avatar_url = "asset/vrm/test.vrm";
+        
+        //描画dom要素を指定
+        const canvasElement = document.querySelector('#myCanvas')
+        
+        // レンダラーを作成
+        const renderer = new THREE.WebGLRenderer({
+          canvas: canvasElement,
+        });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        //名札等表示用のレンダラー
+        const labelRenderer = new CSS3DRenderer();
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.domElement.style.position = "absolute";
+        labelRenderer.domElement.style.left = "0px";
+        labelRenderer.domElement.style.top = "0px";
+        labelRenderer.domElement.style.width = "100vw";
+        labelRenderer.domElement.style.height = "100vh";
+        labelRenderer.domElement.style.pointerEvents = "none";
+        document.body.appendChild(labelRenderer.domElement);
+
+        //オブジェクト毎に更新処理はありうるのでそれを積む辞書
+        const dic_ticks = {};
+        //インスタンス破棄等で不要になったら辞書から削除する
+        //更新関数の引数は前のフレームからの経過時間
+        const clock = new THREE.Clock()
+        // 毎フレーム実行される関数
+        const animation_loop = () =>{
+          const dt = clock.getDelta();//前のフレームからの経過時間
+          //登録済みの更新関数を実行する
+          for(const key in dic_ticks){
+            dic_ticks[key](dt);
+          }
+          renderer.render(scene, camera); // 3Dレンダリング
+          labelRenderer.render(scene, camera);// 名札等レンダリング
+          requestAnimationFrame(animation_loop);
+        };
+
+
+        // シーンを作成
+        const scene = new THREE.Scene();
+
+
+        // 環境光源を作成
+        const light = new THREE.AmbientLight(0xFFFFFF, 1.0);
+        scene.add(light);
+
+          
+        //zx平面にグリッド表示 サイズ10 分割10
+        var gridHelper = new THREE.GridHelper(10, 10);
+        scene.add(gridHelper);
+
+        // カメラを作成
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
+        camera.position.set(0, 2, -3);
+
+        //リサイズ対応
+        window.addEventListener("resize", (e) => {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+          labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        //VRMロード処理の定義
+        const vrm_loader = new GLTFLoader();
+        vrm_loader.register((parser) => {
+          return new VRMLoaderPlugin(parser);
+        });
+        const loadVrmFromUrl = async (path)=>{
+          return new Promise(
+            (resolve => {
+              vrm_loader.load(path, 
+                (gltf) => {
+                  const vrm = gltf.userData.vrm;
+                  resolve(vrm);
+                },
+                (progress) => console.log('Loading model...', 100.0 * (progress.loaded / progress.total), '%'),
+                (error) =>{
+                   console.error(error);
+                   resolve(false);
+                },
+              );
+            })
+          );
+        }
+        const loadVrmFromArrayBuffer = async (buffer)=>{
+          const blob = new Blob( [ buffer ], { type: "application/octet-stream" } );
+          const url = URL.createObjectURL( blob );
+          return await loadVrmFromUrl(url);
+        }
+
+
+        
+        //メタバースではリモートプレイヤーも表示するので
+        //アバター処理をクラスにまとめておく
+        //アバター表示・位置設定・モーション追加・モーション再生・名札表示・発言表示
+        //のみを扱いそれ以上の管理は外で行う。
+        class Avatar {
+          constructor(param){
+            const that = this;
+            this.id = param.id;
+            this.name = param.name;
+            this.motions = {};//引数と違ってこっちはモーション名がキー
+            if(param.motions){
+              for(const motion of param.motions){
+                this.motions[motion.name] = motion.path;
+              }
+            }
+            this.ticks = param.ticks;
+            this.scene = param.scene;
+            this.vrm = null;
+            this.in_set_vrm = false;//アバター設定中かどうか
+            this.current_motion = "";
+            this.tick_name = "avatar_tick_"+this.id;
+            this.avatar_data = "";
+            this.actions = {};
+            this.mixer = null;
+            this.container = new THREE.Object3D(this.name);
+            this.scene.add(this.container);
+            if(param.spawn){
+              this.container.position.set(param.spawn.x,param.spawn.y,param.spawn.z);
+            };         
+            this.ticks[this.tick_name] = (dt) =>{
+              that.tick(dt);
+            }
+
+            //アバターから見た前・右・上の単位ベクトル計算用
+            this.vec_forward = new THREE.Vector3();
+            this.vec_right = new THREE.Vector3();
+            this.vec_up = new THREE.Vector3(0,1,0);//これは固定
+            this.tmp_dir = new THREE.Vector3();
+            this.eye_height = 2;//足元基準での目の高さ
+            
+            //移動量計算用
+            this.move_vec_forward = new THREE.Vector3();
+            this.move_vec_right = new THREE.Vector3();
+            this.move_vec_up = new THREE.Vector3();
+            
+            //名札処理
+            this.nameObj = null;
+            this.nameLabel = null;
+            this.chatLabel = null;
+            this.onclick = param.onclick;
+            this.addNamePlate();
+          }
+
+          removeNamePlate(){
+            if(this.nameObj){
+              //labelはこの時内部処理で削除されている
+              this.container.remove(this.nameObj);
+            }
+          };
+          
+          addNamePlate(){
+            //名札を付ける
+            //色を変えるとかクリック時の処理とかは上の階層でやる
+            const label = document.createElement("div");
+            label.style.color="#ffffff";
+            label.style.textAlign="center";
+            
+            label.onclick = this.onclick;
+            const nameLabel = document.createElement("div");
+            nameLabel.textContent = this.name;
+            label.appendChild(nameLabel);
+            this.nameLabel = nameLabel;
+            const chatLabel = document.createElement("div");
+            chatLabel.style.height="20px";
+            label.appendChild(chatLabel);
+            this.chatLabel = chatLabel;
+            const sprite = new CSS3DSprite(label);
+            sprite.oncontextmenu= () =>{ return false; };
+            sprite.position.y=2;
+            sprite.scale.setScalar(0.01);
+            sprite.rotation.set(0, Math.PI, 0);
+            this.nameObj = sprite;
+            this.container.add(sprite);
+          }
+          updateNamePlate(){
+            //現在のアバターの目の高さ基準で名札の位置を設定する
+            if(!this.vrm){
+              return;
+            }
+            this.nameLabel.textContent = this.name;
+            this.nameObj.position.y=this.eye_height+0.5;
+          };
+          
+          say(msg){
+            if(this.chatLabel){
+              const piece = document.createElement("span");
+              piece.textContent = msg;
+              this.chatLabel.appendChild(piece);
+              setTimeout(()=>{
+                piece.remove();
+              },2000);
+            }
+          }
+
+          
+          tick(dt){
+            if(this.vrm){
+              this.vrm.update(dt);
+              if(this.mixer){
+                this.mixer.update(dt);
+              }
+            }
+          }
+          
+          dispose(){
+            //退室などでいなくなる場合の対応
+            //リモートプレイヤー用
+            this.disposeVRM();
+            this.removeNamePlate();
+            //アニメーション関数を解除
+            if( this.tick_name in this.ticks){
+              delete this.ticks[this.tick_name]
+            }
+          }
+          
+          async setVrm(src){
+            //設定中の呼び出し禁止
+            if(this.in_set_vrm){
+              console.log("in_set_vrm then ignore new setVrm ");
+              return;
+            }
+            this.in_set_vrm= true;
+            if(this.vrm){
+              this.disposeVrm();
+            }
+            //最終的に受信データで更新するのでバイナリ対応
+            if(typeof(src)=="object"){
+              this.vrm = await loadVrmFromArrayBuffer(src);
+            }else{
+              this.vrm = await loadVrmFromUrl(src);
+            }
+            this.avatar_data = src;//後から送信する可能性があるので保存
+            
+            this.container.add(this.vrm.scene);
+
+            //頭の高さの代替として目の高さが欲しい
+            var eye = this.vrm.humanoid.getBoneNode("leftEye");//左目のボーン
+            var world_eye = new THREE.Vector3();
+            eye.getWorldPosition(world_eye);//ワールド座標取得
+            this.eye_height = world_eye.y - this.container.position.y;//足元からの高さ
+            //名札の位置調整
+            this.updateNamePlate();
+
+
+            
+            //actionsリセットしてmixer作り直し
+            this.vrm.humanoid.resetNormalizedPose();
+            this.actions = {};
+            this.mixer = new THREE.AnimationMixer( this.vrm.scene );
+            for(const motion_name in this.motions){
+              await this.registMotion(this.motions[motion_name],motion_name,false);
+            }
+            //前のモーションを引き継ぎ
+            if(this.current_motion){
+              const prev_motion = this.current_motion;
+              this.current_motion="";//リセットしないと変化なし扱いでTポーズから待機モーションにならない
+              this.playMotion(prev_motion);
+            }
+            this.in_set_vrm= false;
+          }
+          disposeVrm(){
+            //現在のVRMを破棄する。
+            if(this.vrm){
+              VRMUtils.deepDispose(this.vrm.scene);
+              this.container.remove(this.vrm.scene);
+            }
+          }
+          
+          async registMotion(src,name,is_new_motion=false){
+            try{
+              var path;
+              if(typeof(src)=="object"){
+                const blob = new Blob( [ src ], { type: "application/octet-stream" } );
+                path = URL.createObjectURL( blob );
+              }else{
+                path = src;
+              }
+              const clip = await loadMixamoAnimation( path, this.vrm);
+              const action = this.mixer.clipAction( clip );
+              this.actions[name]=action;
+              if(is_new_motion){
+                this.motions[name] = src;
+              }
+              return true;
+            }catch(e){
+              return false;
+            }
+          }
+
+          playMotion(name){
+            
+            if(name in this.actions){
+              const prev_animation = this.current_motion
+              const action = this.actions[name];
+              this.current_motion = name;
+              action.play();
+              if( prev_animation in this.actions){
+                const prev_action = this.actions[prev_animation];
+                prev_action.stop();
+              }
+            }
+          }
+
+          calcDirection(){
+             //移動計算用に現在の単位ベクトルを計算する。
+             //前と右のベクトルを計算
+             //上は固定
+
+            if(this.vrm){
+              const dir = this.vrm.scene.getWorldDirection(this.tmp_dir);
+              //dirにはvrmの背後へのベクトルが入っている
+              dir.negate();//反転
+              this.vec_forward.copy(dir);
+              //右を計算したい場合はy軸で-90度回せばいい
+              dir.applyAxisAngle(this.vec_up,Math.PI*-0.5);
+              this.vec_right.copy(dir);
+            }
+          }
+          
+          rotate(rot){
+            this.container.rotation.y += rot;
+          }
+
+          move(forward,right,up){
+            //現在の向きに対する変位量指定での移動
+            //入力値は変位量
+            this.calcDirection();
+            //前後入力分
+            this.move_vec_forward.copy(this.vec_forward);
+            this.move_vec_forward.multiplyScalar(forward);
+            //左右入力分
+            this.move_vec_right.copy(this.vec_right);
+            this.move_vec_right.multiplyScalar(right);
+            //上下入力分
+            this.move_vec_up.copy(this.vec_up);
+            this.move_vec_up.multiplyScalar(up);
+            //位置更新
+            this.container.position.add(this.move_vec_forward);
+            this.container.position.add(this.move_vec_right);
+            this.container.position.add(this.move_vec_up);
+          }
+          
+          teleport(x,y,z,ry){
+            //絶対座標と向き指定での移動
+            this.container.position.set(x,y,z);
+            this.container.rotation.y=ry;
+          }
+          
+          getPosition(){
+            return this.container.position;
+          }
+          
+        }
+
+        //キーボード・マウス操作を移動とカメラに反映するクラス
+        //awsdで移動qeで向き変えマウスドラッグでカメラ制御
+        //cで追尾/自撮り切り替え
+        //ゲームパッド等別の入力手段を使いたい場合は新規にクラスを定義してそっちを使う
+        //ランタイムで複数の入力を切り替えたい場合はenabledを設定して切り替える。
+        //システム操作的なものはこっちじゃなくてui側で扱う方針
+        class PlayerController_Keyboard_and_Mouse{
+          constructor(param){
+            const that = this;
+            this.avatar = param.avatar;
+            this.camera = param.camera;
+            this.enabled = true;
+            if("enabled" in param){
+              this.enabled = param.enabled;
+            }
+            
+            this.canvasElement = param.canvasElement;
+            //アバターの移動速度
+            this.move_speed = 3;
+            if("move_speed" in param){
+              this.move_speed = param.move_speed;
+            }
+            this.rotate_speed = 1;
+            if("rotate_speed" in param){
+              this.rotate_speed = param.rotate_speed;
+            }
+            this.ticks = param.ticks;
+            
+            //追加のキー操作の登録
+            this.key_events = {};
+            if(param.key_events){
+              for(const code in param.key_events){
+                this.key_events[code]=param.key_events[code];
+              }
+            }
+
+            //移動入力
+            this.input_forward = 0;
+            this.input_right = 0;
+            //回転入力
+            this.input_rotate= 0;
+            //カメラ上下移動入力
+            this.camera_updown = 0;
+            //カメラ上下移動累積
+            this.camera_updown_amount=0;
+            //カメラの目標設定用
+            this.look_at_pos = new THREE.Vector3();
+
+            //追尾カメラ処理
+            this.camera_vec = new THREE.Vector3();
+
+
+            //自撮りモード処理
+            this.controls = new OrbitControls(camera, canvasElement);
+            this.controls.enableDamping = true;
+            this.controls.dampingFactor = 0.2;
+            this.use_freecamera = false;
+            this.controls.enabled = false;//初期状態では無効
+
+
+            //ドラッグによるカメラ操作対応
+            this.pointer_button_state = false;
+            this.pointer_move_horizontal = 0;//ドラッグ移動量水平
+            this.pointer_move_vertical = 0;//ドラッグ移動量垂直
+            this.mouseEventContent = this.canvasElement;
+            this.mouseEventContent.addEventListener('pointerdown', (event) => {
+              if(!that.enabled){
+                return;
+              }
+              that.mouseEventContent.setPointerCapture(event.pointerId);
+              that.pointer_button_state=true;
+            });
+            this.mouseEventContent.addEventListener('pointermove', (event) => {
+              if(!that.enabled){
+                return;
+              }
+
+              if(that.pointer_button_state){
+                //tick毎に積算はリセットする
+                that.pointer_move_horizontal += event.movementX;
+                that.pointer_move_vertical += event.movementY;
+                //console.log(pointer_move_horizontal,pointer_move_vertical);
+              }else{
+                //ボタン押してない場合はリセット
+                that.pointer_move_horizontal = 0;
+                that.pointer_move_vertical = 0;
+              }
+            });
+            this.mouseEventContent.addEventListener('pointerup', (event) => {
+              if(!that.enabled){
+                return;
+              }
+
+              that.mouseEventContent.releasePointerCapture(event.pointerId);
+              that.input_rotate = 0;
+              that.camera_updown = 0;
+              that.pointer_button_state=false;
+            });
+
+
+            window.addEventListener("keydown",(e)=>{
+
+              if(!that.enabled){
+                return;
+              }
+
+
+              //移動入力値更新
+              const code = e.code;
+              if(code=="KeyW"){
+                that.input_forward=1;
+              }else if(code=="KeyS"){
+                that.input_forward=-1;
+              }else if(code=="KeyA"){
+                that.input_right = -1;
+              }else if(code=="KeyD"){
+                that.input_right = 1;
+              }else if(code=="KeyQ"){
+                that.input_rotate=1;
+              }else if(code=="KeyE"){
+                that.input_rotate=-1;
+              }else if(code=="KeyC"){
+                that.use_freecamera = ! that.use_freecamera;
+                that.controls.enabled = that.use_freecamera;
+              }else if(code in that.key_events){
+                that.key_events[code](e);
+              }
+            });
+            window.addEventListener("keyup",(e)=>{
+
+              if(!that.enabled){
+                return;
+              }
+
+
+              //移動入力値更新
+              const code = e.code;
+              if(code=="KeyW"){
+                that.input_forward=0;
+              }else if(code=="KeyS"){
+                that.input_forward=0;
+              }else if(code=="KeyA"){
+                that.input_right = 0;
+              }else if(code=="KeyD"){
+                that.input_right = 0;
+              }else if(code=="KeyQ"){
+                that.input_rotate=0;
+              }else if(code=="KeyE"){
+                that.input_rotate=0;
+              }
+            });
+            
+            //tick処理の登録
+            this.ticks["proc_local_player"]= (dt)=>{ 
+
+              if(!that.enabled){
+                return;
+              }
+
+              that.tick_drag(dt);
+              that.tick_move(dt);
+              that.tick_camera(dt);
+            };
+            
+          }
+          tick_move(dt){
+            //移動量計算
+            //前後入力分
+            const forward = this.input_forward * this.move_speed*dt;
+            //左右入力分
+            const right = this.input_right* this.move_speed*dt;
+            //今回は上下はなし
+            const up = 0;
+            //位置更新
+            this.avatar.move(forward,right,up);
+            //向き更新
+            this.avatar.rotate(2*Math.PI *this.input_rotate * this.rotate_speed * dt); 
+
+            //モーション変更
+            //移動入力を見て現在のモーションと違う場合は更新する。
+            const is_move = (this.input_forward != 0 ) || (this.input_right != 0 ) || (this.input_rotate != 0);
+            if(is_move && this.avatar.current_motion!="walk"){
+              //移動中かつ現在のモーションが歩行でない
+              this.avatar.playMotion("walk");
+            }else if(!is_move  && this.avatar.current_motion=="walk"){
+              //移動中でないかつ現在のモーションが歩行
+              this.avatar.playMotion("idle");
+            }else{
+              //いずれでもない場合は現在のモーションを維持する。
+            }
+          }
+          tick_camera(dt){
+            if(this.use_freecamera){
+              //自撮りモードの場合は追尾カメラ処理しない
+              return;
+            }
+            this.avatar.calcDirection();
+            //カメラの位置はプレイヤーの足元基準で後方5m上3mとする
+            this.camera_vec.copy(this.avatar.vec_forward);
+            this.camera_vec.multiplyScalar(-5);//後方5m
+            this.camera_vec.add(this.avatar.getPosition());
+            this.camera_vec.y += this.camera_updown_amount+3;//ドラッグによる操作を反映
+            this.camera.position.copy(this.camera_vec);
+            //プレイヤーの足元から1mだけ上に移動した位置を見る
+            this.look_at_pos.copy(this.avatar.getPosition());
+            this.look_at_pos.y += 1;
+            this.camera.lookAt(this.look_at_pos);
+          }
+          tick_drag(dt){
+            if(this.use_freecamera){
+              //自撮りモードの場合はドラッグによるカメラ処理しない
+              this.pointer_move_horizontal = 0;
+              this.pointer_move_vertical = 0;            
+              return;
+            }
+
+            //ドラッグ操作によるカメラ処理
+            if(this.pointer_button_state){
+              const p_move_x = this.pointer_move_horizontal / window.devicePixelRatio;
+              const p_move_y = this.pointer_move_vertical / window.devicePixelRatio;
+              //画面解像度で割った比率で判断しないと体感に合わない
+
+              const threshold_x = 10;//水平閾値 低いと感度大
+              const threshold_y = 10;//垂直閾値 低いと感度大
+              const rate_x = -0.1;//水平係数 大きいと感度大
+              const rate_y = 1.0;//垂直係数 大きいと感度大
+              //上下 左右 の移動量大きいほうだけ処理
+              if(p_move_y*p_move_y < p_move_x*p_move_x){
+                //水平
+                if(p_move_x*p_move_x > threshold_x){
+                  this.input_rotate = p_move_x * rate_x;
+                  this.camera_updown=0;
+                }
+              }else{
+                //垂直
+                if(p_move_y*p_move_y > threshold_y){
+                  this.camera_updown = p_move_y * rate_y ;
+                  this.input_rotate=0;
+                }
+              }
+              this.camera_updown_amount+=this.camera_updown/50;//そのままだと早すぎる
+              //ドラッグ量リセット
+              this.pointer_move_horizontal=0;
+              this.pointer_move_vertical=0;
+            }
+          }
+        }
+
+        var player_avatar = null;
+
+        //モーション追加のテストのために、順番に再生する関数
+        var extra_motion_index = 0;
+        const playExtraMotion = () =>{
+          const default_motions = {"walk":1,"idle":1};
+          const list = Object.keys(player_avatar.motions).filter((name)=>{ return !(name in default_motions);});
+          console.log(player_avatar.motions,list,extra_motion_index);
+          if(list.length>0){
+            extra_motion_index = extra_motion_index % list.length;
+            const name = list[extra_motion_index];
+            console.log("play ",name);
+            player_avatar.say("モーション再生! "+name);
+
+            player_avatar.playMotion(name);
+            extra_motion_index+=1;
+          }
+        }
+
+
+
+        
+        //初期モーション定義
+        const MOTIONS = [
+          {name:"walk",path:"asset/animation/walk.fbx"},
+          {name:"idle",path:"asset/animation/idle.fbx"},
+        ];
+
+        //アバター生成
+        player_avatar = new Avatar({
+          id:1,
+          name:"あなた",
+          motions:MOTIONS,
+          scene:scene,
+          ticks:dic_ticks,
+          onclick:playExtraMotion,
+        });
+        //初期アバター設定
+        await player_avatar.setVrm(default_avatar_url);
+        //初期モーション設定
+        player_avatar.playMotion("idle");
+        //操作系の生成
+        const player_controller = new PlayerController_Keyboard_and_Mouse({
+          avatar:player_avatar,
+          camera:camera,
+          canvasElement:canvasElement,
+          ticks:dic_ticks,
+          key_events:{"KeyM":(e)=>{playExtraMotion();}}
+        });
+
+
+        //ファイルドロップによるアバター変更とモーション追加
+        //リモートプレイヤーの場合は受信したデータを使う
+        window.addEventListener( 'dragover',( event )=>{
+          event.preventDefault();
+        } );
+        window.addEventListener( 'drop', async ( event )=>{
+
+          event.preventDefault();
+
+          // read given file then convert it to blob url
+          const files = event.dataTransfer.files;
+          if ( ! files ) return;
+
+          const file = files[ 0 ];
+          if ( ! file ) return;
+
+          const fileType = file.name.split( '.' ).pop().toLowerCase();
+          const buffer = await file.arrayBuffer()
+
+          if ( fileType === 'fbx' ) {
+            if(await player_avatar.registMotion(buffer,file.name,true)){
+              player_avatar.say("モーション追加 "+ file.name);
+              //設定されたことがわかるように即再生
+              player_avatar.playMotion(file.name);
+            }else{
+              player_avatar.say("アニメーションじゃない!!! "+ file.name);
+            }
+          } else if(fileType === 'vrm') {
+            player_avatar.say("アバターチェンジ! "+file.name);
+            await player_avatar.setVrm(buffer);
+          }
+
+        } );
+
+        //原点を見る
+        camera.lookAt(0,0,0);
+
+        //フレーム更新関数初回呼び出し
+        animation_loop();
+      };
+      init();
+
+    </script>
+  </head>
+  <body>
+    <canvas id="myCanvas" style="position:absolute;left:0px;top:0px;"></canvas>
+  </body>
+</html>
