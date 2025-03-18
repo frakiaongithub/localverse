@@ -1,0 +1,126 @@
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+</head>
+  <body>
+    <div  id="ui_chat" style="position:absolute;width:95vw;height:95vh">
+      <div style="width:95vw;height:calc(95vh - 30px);bottom:30px;right:0px;overflow-y: scroll;">
+        <ul id="log_list" >
+        </ul>
+      </div>
+      <div  style="left:0px;bottom:0px;width:95vw;height:30px;">
+        <select id="members" style="width:38vw"></select>
+        <input type="text" id="message" style="width:55vw">
+      </div>
+    </div>
+
+    <script>
+      const server_port = 10514;
+      const server_url = "wss://"+location.hostname+":"+server_port+"/";
+      const ws = new WebSocket(server_url);
+      const inp_message = document.getElementById("message");
+      const log_list = document.getElementById("log_list");
+      const appendLog  = (msg) => {
+        const li = document.createElement("li");
+        li.textContent = msg;
+        log_list.appendChild(li);
+        li.scrollIntoView();
+      };
+
+
+      const sel_members = document.getElementById("members");
+      const onWelcome = (info)=>{
+
+        //部屋移動したのでメンバーリスト再構成
+        while(sel_members.length>0){
+          sel_members.remove(0);
+        };
+        //membersから再構成
+        for(const m of info.members){
+          const opt = document.createElement("option");
+          opt.value = m;
+          opt.text = m;
+          sel_members.add(opt);
+        }
+        appendLog("送信可能になりました");
+        inp_message.addEventListener('keydown', (e) => {
+          //keyCodeは非推奨だが日本語変換と判別する都合これしかない
+          if(!inp_message.value){
+            //メッセージなし
+            return;
+          }
+          if(e.keyCode === 13) {
+            if(sel_members.length<1){
+              //送信対象なし
+              appendLog("送信対象がありません");
+              return;
+            }
+            const target = sel_members.options[sel_members.selectedIndex].value;
+            const message_body = inp_message.value;
+            const tell_msg = {"mode":"tell","target":target,"message":message_body};
+            ws.send(JSON.stringify(tell_msg));
+            appendLog("あなたの発言: "+message_body);
+            inp_message.value="";
+          }
+        });
+      }
+      const onJoin = (info) =>{
+        //参加したメンバーを追加
+        const opt = document.createElement("option");
+        opt.value = info.id;
+        opt.text = info.id;
+        sel_members.add(opt);
+        appendLog("["+info.id+"]が参加しました");
+      }
+
+
+      const onLeave = (info) =>{
+        //離脱したメンバーを削除
+        var remove_idx = -1;
+        for(let i=0;i<sel_members.length;i++){
+          const opt = sel_members.options[i];
+          if(opt.value = info.id){
+            sel_members.remove(i);
+            break;
+          }
+        }
+        appendLog("["+info.id+"]が離脱しました");
+      }
+      
+      const onTell = (info) =>{
+        appendLog(info.sender + "の発言: "+info.message);
+      }
+      
+      var connected = false;
+      ws.onopen = (event) => {
+        connected = true;
+        appendLog("サーバに接続しました");
+      };
+      ws.onclose = (event) => {
+        if(connected){
+          appendLog("サーバとの接続が切断されました");
+        }
+      };
+      ws.onerror = async (event) => {
+        if(ws.readyState==3){
+          appendLog("サーバに接続できません");
+        }else{
+          appendLog("通信エラーが発生");
+        }
+      };
+      ws.onmessage = (event) =>{
+        const message = event.data;
+        const info = JSON.parse(message);
+        if(info.mode=="welcome"){
+          onWelcome(info);
+        }else if(info.mode=="join"){
+          onJoin(info);
+        }else if(info.mode=="leave"){
+          onLeave(info);
+        }else if(info.mode=="tell"){
+          onTell(info);
+        }
+      };
+    </script>
+  </body>
+</html>
