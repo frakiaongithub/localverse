@@ -1,0 +1,345 @@
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+</head>
+  <body>
+    <div  id="ui_chat" style="position:absolute;width:95vw;height:95vh">
+      <div style="width:95vw;height:calc(95vh - 30px);bottom:30px;right:0px;overflow-y: scroll;">
+        <ul id="log_list" >
+        </ul>
+      </div>
+      <div  style="left:0px;bottom:0px;width:95vw;height:30px;">
+        <button type="button" id="btn_move_room" style="width:70px">部屋移動</button>
+        <select id="members" style="width:120px"></select>
+        <input type="text" id="message" style="width:calc(90vw - 190px);">
+      </div>
+    </div>
+
+    <script>
+      const init = async () =>{
+        const server_port = 10514;
+        const server_url = "wss://"+location.hostname+":"+server_port+"/";
+        const token_name = "wss_auth_token";
+        
+        var id2name = {};//接続idと名前の辞書
+
+        const url = new URL(window.location.href);
+        //getパラメータによる初期ルーム = 部屋指定
+        const room = url.searchParams.get('room');
+        //getパラメータを抜いたurl = ワールド
+        const world = url.origin+url.pathname;
+        
+        //ui要素
+        const inp_message = document.getElementById("message");
+        const log_list = document.getElementById("log_list");
+        const sel_members = document.getElementById("members");
+        const btn_move_room = document.getElementById("btn_move_room");
+
+
+        //非同期入力関数
+        //非同期prompt関数
+        const promptAsync = async (message_text,default_value="") => {
+          let dialog = document.createElement('dialog');
+          let message = document.createElement('p');
+          message.textContent = message_text;
+          dialog.appendChild(message);
+          let input = document.createElement('input');
+          input.value = default_value;
+          dialog.appendChild(input);
+          let ok_button = document.createElement('button');
+          ok_button.textContent = "決定";
+          if(!default_value){
+            ok_button.disabled = true;
+          }
+          dialog.appendChild(ok_button);
+          input.oninput = () =>{
+            ok_button.disabled = (input.value=="");
+          }
+          let cancel_button = document.createElement('button');
+          cancel_button.textContent = "中止";
+          dialog.appendChild(cancel_button);
+          
+          document.body.appendChild(dialog);;
+          dialog.showModal();
+          return new Promise(resolve => {
+            const eventBase = flag => () => {
+              //空入力でokした場合はキャンセル可能ならキャンセル扱い
+              //そうでない場合は無視
+              if(flag==true && input.value==""){
+                flag = false;
+              }
+              dialog.close();
+              ok_button.removeEventListener("click", okEvent);
+              cancel_button.removeEventListener("click", cancelEvent);
+              document.body.removeChild(dialog);
+              if(flag==true){
+                resolve(input.value);
+              }else if(flag==false){
+                resolve(false);
+              }else{
+                resolve(flag);
+              }
+            };
+            const okEvent = eventBase(true);
+            const cancelEvent = eventBase(false);
+            ok_button.addEventListener("click", okEvent);
+            cancel_button.addEventListener("click", cancelEvent);
+          });
+        };
+
+
+        //非同期ログイン入力関数
+        //user_id passwordを持つ連想配列を返す
+        const loginAsync = async () => {
+          let dialog = document.createElement('dialog');
+          let html = "";
+          html += "<table>";
+          html += "<tr>";
+          html += '<td align="right">';
+          html += "ID:";
+          html += "</td>";
+          html += "<td>";
+          html += '<input id="user_id">';
+          html += "</td>";
+          html += "</tr>";
+          html += "<tr>";
+          html += '<td align="right">';
+          html += "PASSWORD:";
+          html += "</td>";
+          html += "<td>";
+          html += '<input id="password" type="password">';
+          html += "</td>";
+          html += "</tr>";
+          html += "<tr>";
+          html += "<td colspan=2>";
+          html += '<input id="btn_login" type="button" value="LOGIN">';
+          html += "</td>";
+          html += "</tr>";
+          html += "</table>";
+          dialog.innerHTML = html;
+          document.body.appendChild(dialog);
+          const btn_login = document.getElementById('btn_login');
+          const inp_user_id = document.getElementById('user_id');
+          const inp_password = document.getElementById('password');
+          
+          dialog.showModal();
+          return new Promise(resolve => {
+            const eventBase = flag => () => {
+              //空入力でokした場合はキャンセル可能ならキャンセル扱い
+              //そうでない場合は無視
+              const user_id = inp_user_id.value;
+              const password = inp_password.value;
+              if(flag==true && (user_id=="" || password.value=="")){
+                flag = false;
+              }
+              dialog.close();
+              btn_login.removeEventListener("click", okEvent);
+              document.body.removeChild(dialog);
+              if(flag==true){
+                resolve({"user_id":user_id,"password":password});
+              }else if(flag==false){
+                resolve(false);
+              }else{
+                resolve(flag);
+              }
+            };
+            const okEvent = eventBase(true);
+            btn_login.addEventListener("click", okEvent);
+          });
+        };
+        
+        const moveRoom = async () =>{
+          const new_room = await promptAsync("部屋名を入力してください");
+          if(new_room){
+            location.href = world + "?room=" + new_room;
+            return true;
+          }else{
+            return false;
+          }
+        }
+        
+        //部屋名必須
+        if(!room){
+          while(true){
+            const ret = await moveRoom();
+            if(ret){
+              break;
+            }
+          }
+          return;
+        }
+        
+        
+        //ここにいる時点でroomは指定されている。
+
+
+        const ws = new WebSocket(server_url);
+
+        const appendLog  = (msg) => {
+          const li = document.createElement("li");
+          li.textContent = msg;
+          log_list.appendChild(li);
+          li.scrollIntoView();
+        };
+
+        const doAuth = async (token) =>{
+          const auth_msg = {"mode":"auth","token":token,"world":world,"room":room};
+          ws.send(JSON.stringify(auth_msg));
+        };
+        
+        const doLogin = async () =>{
+          const info = await loginAsync();
+          if(!info){
+            return false;
+          }else{
+            const login_msg = {"mode":"login","user_id":info.user_id,"password":info.password,"world":world,"room":room};
+            ws.send(JSON.stringify(login_msg));            
+            return true;
+          }
+        };
+        
+        const onConnect = async () =>{
+          const token = sessionStorage.getItem(token_name);
+          if(token){
+            //tokenによる認証を試みる
+            await doAuth(token);
+          }else{
+            //idとパスワードによる認証を試みる
+            let ret = false;
+            while(!ret){
+              ret = await doLogin();
+            }
+          }
+        }
+        
+        const onNeedLogin = async () =>{
+          let ret = false;
+          while(!ret){
+            ret = await doLogin();
+          }
+        }
+        
+        const onWelcome = (info)=>{
+
+          //トークン保存
+          const token = info.token;
+          sessionStorage.setItem(token_name,token);
+
+          //部屋移動したのでメンバーリスト再構成
+          while(sel_members.length>0){
+            sel_members.remove(0);
+          };
+          //membersから再構成
+          id2name = {};
+          for(const m of info.members){
+            const opt = document.createElement("option");
+            opt.value = m.id;
+            opt.text = m.name;
+            sel_members.add(opt);
+            id2name[m.id]=m.name;
+          }
+          appendLog("送信可能になりました");
+          console.log(id2name);
+          inp_message.addEventListener('keydown', (e) => {
+            //keyCodeは非推奨だが日本語変換と判別する都合これしかない
+            if(!inp_message.value){
+              //メッセージなし
+              return;
+            }
+            if(e.keyCode === 13) {
+              if(sel_members.length<1){
+                //送信対象なし
+                appendLog("送信対象がありません");
+                return;
+              }
+              const target = sel_members.options[sel_members.selectedIndex].value;
+              const message_body = inp_message.value;
+              const target_name = id2name[target]; 
+              const tell_msg = {"mode":"tell","target":target,"message":message_body};
+              ws.send(JSON.stringify(tell_msg));
+              appendLog("あなた>>"+target_name+": "+message_body);
+              inp_message.value="";
+            }
+          });
+          btn_move_room.onclick= async (e) =>{
+            await moveRoom();
+          };
+        }
+        const onJoin = (info) =>{
+          //参加したメンバーを追加
+          const opt = document.createElement("option");
+          opt.value = info.id;
+          opt.text = info.name;
+          sel_members.add(opt);
+          appendLog("["+info.name+"]が参加しました");
+          id2name[info.id]= info.name;
+          console.log(id2name);
+          
+        }
+
+
+        const onLeave = (info) =>{
+          //離脱したメンバーを削除
+          var remove_idx = -1;
+          var name = id2name[info.id];
+          for(let i=0;i<sel_members.length;i++){
+            const opt = sel_members.options[i];
+            if(opt.value = info.id){
+              sel_members.remove(i);
+              delete id2name[info.id];
+              break;
+            }
+          }
+          appendLog("["+name+"]が離脱しました");
+          console.log(id2name);
+
+        }
+        
+        const onTell = (info) =>{
+          const sender_name = id2name[info.sender];
+          appendLog(sender_name + ">>あなた: "+info.message);
+        }
+        
+        var connected = false;
+        ws.onopen = (event) => {
+          connected = true;
+          appendLog("サーバに接続しました");
+          onConnect();
+        };
+        ws.onclose = (event) => {
+          if(connected){
+            appendLog("サーバとの接続が切断されました");
+          }
+        };
+        ws.onerror = async (event) => {
+          if(ws.readyState==3){
+            appendLog("サーバに接続できません");
+          }else{
+            appendLog("通信エラーが発生");
+          }
+        };
+        ws.onmessage = (event) =>{
+          const message = event.data;
+          console.log(message);
+          const info = JSON.parse(message);
+          if(info.mode=="need_login"){
+            onNeedLogin();
+          }else if(info.mode=="welcome"){
+            onWelcome(info);
+          }else if(info.mode=="join"){
+            onJoin(info);
+          }else if(info.mode=="leave"){
+            onLeave(info);
+          }else if(info.mode=="tell"){
+            onTell(info);
+          }else if(info.mode=="attacked"){
+            appendLog("何者かがあなたのアカウントでログインを試みています");
+          }else if(info.mode=="sameuser"){
+            appendLog("同じアカウントでログインしている人がいます");
+          }
+        };
+      };
+      init();
+    </script>
+  </body>
+</html>
