@@ -1,0 +1,70 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/npm/three/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+      //描画対象dom要素を指定
+      const canvasElement = document.querySelector('#myCanvas')
+      
+      // レンダラーを作成
+      const renderer = new THREE.WebGLRenderer({
+        canvas: canvasElement,
+      });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      // シーンを作成
+      const scene = new THREE.Scene();
+        
+      //わかりやすくするためにzx平面にグリッド表示 サイズ10 分割10
+      var gridHelper = new THREE.GridHelper(10, 10);
+      scene.add(gridHelper);
+
+      // カメラを作成
+      const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
+      camera.position.set(0, 2, -3);
+
+
+
+      // 箱を作成
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const material = new THREE.MeshNormalMaterial();
+      const box = new THREE.Mesh(geometry, material);
+      box.position.set(0,0.5,0);
+      box.rotation.set(0,Math.PI/4,0);
+      scene.add(box);
+
+      //カメラを箱のほうにむける
+      camera.lookAt(box.position);
+
+      //表示 カメラから見たシーンを描画する
+      renderer.render(scene, camera); 
+
+      //箱を動かす処理の追加
+      const clock = new THREE.Clock();//
+      const tick = (dt) =>{
+        //箱回し関数
+        //dtは経過時間(秒)
+        box.rotation.y += Math.PI * dt * 1;//毎秒0.5回転
+      };
+      const animation_loop = () =>{
+        const dt = clock.getDelta();//前のフレームからの経過時間
+        tick(dt);//オブジェクトの更新
+        renderer.render(scene, camera); // レンダリング
+        requestAnimationFrame(animation_loop);//次フレームの予約
+      };
+      requestAnimationFrame(animation_loop);
+
+    </script>
+  </head>
+  <body>
+    <canvas id="myCanvas"></canvas>
+  </body>
+</html>
