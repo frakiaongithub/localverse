@@ -1,0 +1,185 @@
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+</head>
+  <body>
+<!-- 手動シグナリングによる接続のテスト -->
+    <div  id="ui_signaling" style="background-color:transparent;position:absolute;left:0px;top:0px;height:200px">
+      <table border>
+        <tr>
+          <td>1</td>
+          <td><button type="button" id="btn_offer">Offer</button></td>
+          <td>クライアント1で押す</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>
+            OfferSDP:<br>
+            <textarea id="ta_offer_sdp" ></textarea>
+          </td>
+          <td>クライアント1でコピー、クライアント2にペースト</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><button type="button" id="btn_answer">Answer</button></td>
+          <td>クライアント2で押す</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>
+            AnswerSDP:<br>
+            <textarea id="ta_answer_sdp" ></textarea>
+          </td>
+          <td>クライアント2でコピー、クライアント1にペースト</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><button type="button" id="btn_finish_offer">Finish Offer</button></td>
+          <td>クライアント1で押す</td>
+        </tr>
+      </table>
+    </div>
+    <div  id="ui_chat" style="position:absolute;width:90vw;height:100vh;display:none">
+      <div style="width:90vw;height:calc(100vh - 30px);bottom:30px;right:0px;overflow-y: scroll;">
+        <ul id="log_list" >
+        </ul>
+      </div>
+      <div  style="left:0px;bottom:0px;width:90vw">
+        <input type="text" id="message" style="width:90vw">
+      </div>
+    </div>
+    <script>
+      const ui_signaling = document.getElementById("ui_signaling");
+      const ui_chat = document.getElementById("ui_chat");
+
+      const btn_offer = document.getElementById("btn_offer");
+      const btn_answer = document.getElementById("btn_answer");
+      const btn_finish_offer = document.getElementById("btn_finish_offer");
+      const ta_offer_sdp = document.getElementById("ta_offer_sdp");
+      const ta_answer_sdp = document.getElementById("ta_answer_sdp");
+      
+      const inp_message = document.getElementById("message");
+      const log_list = document.getElementById("log_list");
+      const appendLog  = (msg) => {
+        const li = document.createElement("li");
+        li.textContent = msg;
+        log_list.appendChild(li);
+        li.scrollIntoView();
+      };
+      var connected = false;
+
+      const pc_config = {"iceServers":[]};
+      const dataChannelOptions = {};
+
+      var peer = null;
+      var channel = null;
+      const setup_channel  = (channel)=>{
+        channel.onmessage = (event) => {
+          appendLog("相手の発言: " + event.data);
+        };
+        channel.onopen = () => {
+          connected=true;
+          appendLog("送信可能になりました");
+          //通信可能になったのでシグナリングuiを消してチャットuiを表示
+          ui_signaling.style.display="none";
+          ui_chat.style.display="";
+          inp_message.addEventListener('keydown', (e) => {
+            //keyCodeは非推奨だが日本語変換と判別する都合これしかない
+            if(!inp_message.value){
+              //メッセージなし
+              return;
+            }
+            if(e.keyCode === 13) {
+              const message = inp_message.value;
+              channel.send(message);
+              appendLog("あなたの発言: " + message);
+              inp_message.value="";
+            }
+          });
+        };
+        channel.onclose = () => {
+        };
+      }
+
+      const createOffer = async () =>{
+        peer = new RTCPeerConnection(pc_config);
+        //チャットデータをやり取りするdatachannel追加
+        channel = peer.createDataChannel("chat", dataChannelOptions);
+        setup_channel(channel);
+        peer.onicecandidate = (evt)=> {
+          if (evt.candidate) {
+            console.log(evt.candidate);
+          } else {
+            console.log('empty ice event');
+            // sdpができたので表示する。
+            ta_offer_sdp.value = peer.localDescription.sdp;
+          }
+        };
+
+        peer.onconnectionstatechange = (ev) => {
+          console.log("onconnectionstatechange",peer.connectionState);
+          if(peer.connectionState=="disconnected"){
+            appendLog("接続が切断されました");
+          }else if(peer.connectionState=="connected"){
+            appendLog("接続が確立しました");
+          }
+        };
+        const sessionDescription = await peer.createOffer();
+        peer.setLocalDescription(sessionDescription);//いらないかも
+      };
+
+      const createAnswer = async () =>{
+        const remote_sdp = ta_offer_sdp.value;
+        peer = new RTCPeerConnection(pc_config);
+        const offer = new RTCSessionDescription({
+          type : 'offer',
+          sdp : remote_sdp,
+        });
+        await peer.setRemoteDescription(offer);
+        
+        //answer側ではcreateではなくイベントでdatachannelを取得する
+        peer.ondatachannel = (event) => {
+          channel = event.channel;
+          setup_channel(channel);
+        }
+
+        peer.onicecandidate = (evt)=> {
+          if (evt.candidate) {
+            console.log(evt.candidate);
+          } else {
+            console.log('empty ice event');
+            //sdpが取れたので表示
+            ta_answer_sdp.value = peer.localDescription.sdp;
+          }
+        };
+
+        peer.onconnectionstatechange = (ev) => {
+          console.log("onconnectionstatechange",ev);
+          if(peer.connectionState=="disconnected"){
+            appendLog("接続が切断されました");
+          }else if(peer.connectionState=="connected"){
+            appendLog("接続が確立しました");
+          }
+        };
+
+        const answer = await peer.createAnswer()
+        peer.setLocalDescription(answer);
+
+      };
+
+      const finishOffer = async () =>{
+        const remote_sdp = ta_answer_sdp.value;
+        const answer = new RTCSessionDescription({
+          type : 'answer',
+          sdp : remote_sdp,
+        });
+        await peer.setRemoteDescription(answer);
+        console.log("finish offer");
+      };
+      
+      btn_offer.onclick = createOffer;
+      btn_answer.onclick = createOnswer;
+      btn_finish_offer.onclick = finishOffer;
+    </script>
+  </body>
+</html>
