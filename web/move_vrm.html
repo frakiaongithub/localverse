@@ -1,0 +1,254 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/npm/three/build/three.module.js",
+          "three/addons/": "/npm/three/examples/jsm/",
+          "pixiv/three-vrm": "/npm/@pixiv/three-vrm/lib/three-vrm.module.min.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+      import { VRMLoaderPlugin } from 'pixiv/three-vrm';
+      import { loadMixamoAnimation } from './loadMixamoAnimation.js';
+      
+      //awaitを使いたいのでasync関数に入れる。
+      const init = async () =>{
+
+        //描画dom要素を指定
+        const canvasElement = document.querySelector('#myCanvas')
+        
+        // レンダラーを作成
+        const renderer = new THREE.WebGLRenderer({
+          canvas: canvasElement,
+        });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+
+        //オブジェクト毎に更新処理はありうるのでそれを積む辞書
+        const dic_ticks = {};
+        //インスタンス破棄等で不要になったら辞書から削除する
+        //更新関数の引数は前のフレームからの経過時間
+        const clock = new THREE.Clock()
+        // 毎フレーム実行される関数
+        const animation_loop = () =>{
+          const dt = clock.getDelta();//前のフレームからの経過時間
+          //登録済みの更新関数を実行する
+          for(const key in dic_ticks){
+            dic_ticks[key](dt);
+          }
+          renderer.render(scene, camera); // レンダリング
+          requestAnimationFrame(animation_loop);
+        };
+
+
+        // シーンを作成
+        const scene = new THREE.Scene();
+
+
+        // 環境光源を作成
+        const light = new THREE.AmbientLight(0xFFFFFF, 1.0);
+        scene.add(light);
+
+          
+        //zx平面にグリッド表示 サイズ10 分割10
+        var gridHelper = new THREE.GridHelper(10, 10);
+        scene.add(gridHelper);
+
+        // カメラを作成
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
+        camera.position.set(0, 2, -3);
+        
+
+        
+        //VRMロード処理の定義
+        const loader = new GLTFLoader();
+        loader.register((parser) => {
+          return new VRMLoaderPlugin(parser);
+        });
+        const loadVrm = async (path)=>{
+          return new Promise(
+            (resolve => {
+              loader.load(path, 
+                (gltf) => {
+                  const vrm = gltf.userData.vrm;
+                  resolve(vrm);
+                },
+                (progress) => console.log('Loading model...', 100.0 * (progress.loaded / progress.total), '%'),
+                (error) =>{
+                   console.error(error);
+                   resolve(false);
+                },
+              );
+            })
+          );
+        }
+        
+        //fbxをロードしてvrmにモーションを設定する処理
+        //vrm.playMotion(モーション名)で再生する。
+        var avatar_count = 0;//アバター識別用番号
+        const loadMotion = async (path,name,vrm) =>{
+          if(!("playMotion" in vrm)){
+            vrm.humanoid.resetNormalizedPose();
+            vrm.dic_actions = {};
+            vrm.mixer = new THREE.AnimationMixer( vrm.scene );
+            avatar_count +=1;
+            vrm.avatar_id = avatar_count;
+
+            //vrmの更新処理を描画更新処理に積む
+            const tick_vrm = (dt)=>{
+              vrm.update(dt);
+              vrm.mixer.update(dt);
+            }
+            dic_ticks["tick_vrm_"+vrm.avatar_id]= tick_vrm;
+        
+            vrm.playMotion = (name) =>{
+              if(name in vrm.dic_actions){
+                const prev_animation = vrm.current_animation
+                const action = vrm.dic_actions[name];
+                vrm.current_animation = name;
+                action.play();
+                if( prev_animation in vrm.dic_actions){
+                  const prev_action = vrm.dic_actions[prev_animation];
+                  prev_action.stop();
+                }
+              }
+            };
+            vrm.registMotion = async (path,name,vrm) =>{
+              const clip = await loadMixamoAnimation( path, vrm);
+              const action = vrm.mixer.clipAction( clip );
+              vrm.dic_actions[name]=action;
+            };
+            
+            vrm.releaseMotion = () =>{
+              delete dic_ticks["tick_vrm_"+vrm.avatar_id];
+            }
+            
+          };
+          await vrm.registMotion(path,name,vrm);
+        }
+
+        //vrm読み込み
+        const vrm = await loadVrm('asset/vrm/test.vrm');
+        
+        //歩行モーション読み込み
+        await loadMotion('asset/animation/walk.fbx','walk',vrm);
+        //歩行モーション実行
+        vrm.playMotion('walk');
+
+
+        //待機モーション読み込み
+        await loadMotion('asset/animation/idle.fbx','idle',vrm);
+        
+        //移動入力対応
+        //アバターから見た前・右・上の単位ベクトル
+        const vec_forward = new THREE.Vector3();
+        const vec_right = new THREE.Vector3();
+        const vec_up = new THREE.Vector3(0,1,0);
+        const tmp_dir = new THREE.Vector3();
+        //アバターの移動速度
+        const move_speed = 3;//1秒で3m
+        const rotate_speed = 1;//１秒で１回転
+        //移動入力
+        var input_forward = 0;
+        var input_right = 0;
+        //回転入力
+        var input_rotate= 0;
+
+        const calcDirection = (vrm)=>{
+          //移動計算用に現在の単位ベクトルを計算する。
+          const dir = vrm.scene.getWorldDirection(tmp_dir);
+          //dirにはvrmの背後へのベクトルが入っている
+          dir.negate();//反転
+          vec_forward.copy(dir);
+          //右を計算したい場合はy軸で-90度回せばいい
+          dir.applyAxisAngle(vec_up,Math.PI*-0.5);
+          vec_right.copy(dir);
+        }
+        
+        window.addEventListener("keydown",(e)=>{
+          //移動入力値更新
+          const code = e.code;
+          if(code=="KeyW"){
+            input_forward=1;
+          }else if(code=="KeyS"){
+            input_forward=-1;
+          }else if(code=="KeyA"){
+            input_right = -1;
+          }else if(code=="KeyD"){
+            input_right = 1;
+          }else if(code=="KeyQ"){
+            input_rotate=1;
+          }else if(code=="KeyE"){
+            input_rotate=-1;
+          }
+        });
+        window.addEventListener("keyup",(e)=>{
+          //移動入力値更新
+          const code = e.code;
+          if(code=="KeyW"){
+            input_forward=0;
+          }else if(code=="KeyS"){
+            input_forward=0;
+          }else if(code=="KeyA"){
+            input_right = 0;
+          }else if(code=="KeyD"){
+            input_right = 0;
+          }else if(code=="KeyQ"){
+            input_rotate=0;
+          }else if(code=="KeyE"){
+            input_rotate=0;
+          }
+        });
+        //位置更新処理の登録
+        const move_vec_forward = new THREE.Vector3();
+        const move_vec_right = new THREE.Vector3();
+        dic_ticks["proc_input"] = (dt) =>{
+          calcDirection(vrm);
+          //移動ベクトル計算
+          //前後入力分
+          move_vec_forward.copy(vec_forward);//前方単位ベクトルコピー
+          move_vec_forward.multiplyScalar(input_forward * move_speed*dt);//入力値*移動速度*フレーム時間で変位を得る
+          //左右入力分
+          move_vec_right.copy(vec_right);//右方単位ベクトルコピー
+          move_vec_right.multiplyScalar(input_right* move_speed*dt);//入力値*移動速度*フレーム時間で変位を得る
+          //位置更新
+          vrm.scene.position.add(move_vec_forward);
+          vrm.scene.position.add(move_vec_right);
+          
+          //向き更新
+          vrm.scene.rotation.y += 2*Math.PI *input_rotate * rotate_speed * dt; 
+          
+          //モーション変更
+          //移動入力を見て現在のモーションと違う場合は更新する。
+          const is_move = (input_forward != 0 ) || (input_right != 0 ) || (input_rotate != 0);
+          if(is_move && vrm.current_animation=="idle"){
+            vrm.playMotion("walk");
+          }else if(!is_move  && vrm.current_animation=="walk"){
+            vrm.playMotion("idle");
+          }
+          
+        }
+
+        //シーンに追加
+        scene.add(vrm.scene);
+
+        //原点を見る
+        camera.lookAt(0,0,0);
+
+        //フレーム更新関数初回呼び出し
+        animation_loop();
+      };
+      init();
+
+    </script>
+  </head>
+  <body>
+    <canvas id="myCanvas"></canvas>
+  </body>
+</html>
