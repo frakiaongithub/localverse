@@ -407,11 +407,10 @@
         //シグナリングサーバからの離脱通知処理
         const onLeave = (info) =>{
           //離脱したメンバーを削除
-          var remove_idx = -1;
           var name = id2name[info.id];
           for(let i=0;i<sel_members.length;i++){
             const opt = sel_members.options[i];
-            if(opt.value = info.id){
+            if(opt.value == info.id){
               sel_members.remove(i);
               delete id2name[info.id];
               if(info.id in connections){

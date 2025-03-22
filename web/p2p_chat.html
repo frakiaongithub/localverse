@@ -54,8 +54,12 @@
             "onmessage":(id,data)=>{
               const sender_name = id2name[id];
               try{
-                const tell_msg = JSON.parse(data);
-                appendLog(sender_name + ">>あなた: "+tell_msg.message);
+                const info = JSON.parse(data);
+                if(info.mode=="tell"){
+                  appendLog(sender_name + ">>あなた: "+info.message);
+                }else{
+                  appendLog(sender_name +": "+info.message);
+                }
               }catch(e){
               }
             },
@@ -290,43 +294,6 @@
             });
           }
 
-
-          async offer_org(){
-            const that=this;
-            this.peer = new RTCPeerConnection(this,pc_config);
-            //offerの場合は能動的にchannel追加
-            for(const name in this.channels_def){
-              const channel = this.peer.createDataChannel(name);
-              this.setup_channel(name,channel)
-            }
-            this.peer.onicecandidate = (evt)=> {
-              if (evt.candidate) {
-                console.log(evt.candidate);
-              } else {
-                console.log('empty ice event');
-                //sdpの形で送ると処理が面倒になるので
-                //localDescriptionを送る
-                if(that.sendOffer){
-                  that.sendOffer(that.local_id,that.remote_id,that.peer.localDescription);
-                }
-              }
-            };
-            this.peer.onconnectionstatechange = (ev) => {
-              console.log("onconnectionstatechange",that.peer.connectionState);
-              if(that.peer.connectionState=="disconnected"){
-                if(that.onDisconnect){
-                  that.onDisconnect(that.remote_id);
-                }
-              }else if(that.peer.connectionState=="connected"){
-                if(that.onConnect){
-                  that.onConnect(that.remote_id);
-                }
-              }
-            };
-            const sessionDescription = await this.peer.createOffer();
-            this.peer.setLocalDescription(sessionDescription);
-          }
-
           async answer(offerSDP){
             const that = this;
             return new Promise( async (resolve) => {
@@ -373,52 +340,6 @@
 
           }
 
-
-          async answer_org(offerSDP){
-            const that = this;
-
-            this.peer = new RTCPeerConnection(this.pc_config);
-            const offer = new RTCSessionDescription({
-              type : 'offer',
-              sdp : offerSDP,
-            });
-            await this.peer.setRemoteDescription(offer);
-            
-            //answer側ではcreateではなくイベントでdatachannelを取得する
-            this.peer.ondatachannel = (event) => {
-              const channel = event.channel;
-              //createDataChannelで指定した名前はリモートでもlabelの値に反映される
-              that.setup_channel(channel.label,channel);
-            }
-
-            this.peer.onicecandidate = (evt)=> {
-              if (evt.candidate) {
-                console.log(evt.candidate);
-              } else {
-                console.log('empty ice event');
-                //sdpの形で送ると処理が面倒になるので
-                //localDescriptionを送る
-                if(that.sendAnswer){
-                  that.sendAnswer(that.local_id,that.remote_id,that.peer.localDescription);
-                }
-              }
-            };
-
-            this.peer.onconnectionstatechange = (ev) => {
-              console.log("onconnectionstatechange",that.peer.connectionState);
-              if(that.peer.connectionState=="disconnected"){
-                if(that.onDisconnect){
-                  that.onDisconnect(that.remote_id);
-                }
-              }else if(that.peer.connectionState=="connected"){
-                if(that.onConnect){
-                  that.onConnect(that.remote_id);
-                }
-              }
-            };
-            const answer = await this.peer.createAnswer()
-            this.peer.setLocalDescription(answer);
-          }
           async finishOffer(answerSDP){
             const answer = new RTCSessionDescription({
               type : 'answer',
@@ -503,6 +424,12 @@
           };
           //membersから再構成
           id2name = {};
+          {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.text = "全体発信";
+            sel_members.add(opt);
+          }
           for(const m of info.members){
             const opt = document.createElement("option");
             opt.value = m.id;
@@ -535,11 +462,21 @@
               const target = sel_members.options[sel_members.selectedIndex].value;
               const message_body = inp_message.value;
               const target_name = id2name[target]; 
-              const tell_msg = {"mode":"tell","target":target,"message":message_body};
-              if(target in connections){
-                connections[target].send("chat",JSON.stringify(tell_msg))
+
+              if(target){
+                const tell_msg = {"mode":"tell","target":target,"message":message_body};
+
+                if(target in connections){
+                  connections[target].send("chat",JSON.stringify(tell_msg))
+                }
+                appendLog("あなた>>"+target_name+": "+message_body);
+              }else{
+                const say_msg = {"mode":"say","target":target,"message":message_body};
+                for(const id in connections){
+                  connections[id].send("chat",JSON.stringify(say_msg))
+                }
+                appendLog("あなた: "+message_body);
               }
-              appendLog("あなた>>"+target_name+": "+message_body);
               inp_message.value="";
             }
           });
@@ -568,11 +505,10 @@
         //シグナリングサーバからの離脱通知処理
         const onLeave = (info) =>{
           //離脱したメンバーを削除
-          var remove_idx = -1;
           var name = id2name[info.id];
           for(let i=0;i<sel_members.length;i++){
             const opt = sel_members.options[i];
-            if(opt.value = info.id){
+            if(opt.value == info.id){
               sel_members.remove(i);
               delete id2name[info.id];
               if(info.id in connections){
