@@ -79,7 +79,7 @@
           "transform":{
             onopen:(id)=>{
               if(id in id2name){
-                crearteOther(id,id2name[id]);
+                createOther(id,id2name[id]);
               }
             },
             "onmessage":(id,data)=>{
@@ -386,9 +386,20 @@
               this.peer.close();
             }
           }
+          canSend(channel_name){
+            if(channel_name in this.channels){
+              return (this.channels[channel_name].readyState=="open");
+            }else{
+              return false;
+            }
+          }
           send(channel_name,data){
             if(channel_name in this.channels){
-              this.channels[channel_name].send(data);
+              if(this.channels[channel_name].readyState=="open"){
+                this.channels[channel_name].send(data);
+              }else{
+                console.log("channel ",channel_name ,"in",this.remote_id ," not open ",this.channels[channel_name].readyState);
+              }
             }
           }
         }
@@ -430,32 +441,12 @@
 
         var avatars = {};//接続idとアバターの辞書。値は後で定義するBoxAvatarクラス
         
-        //tell
-        const sendChat = (id,msg) =>{
-          if(id in connections){
-            const conn = connections[id];
-            if("chat" in conn.channels){
-              conn.channels["chat"].send(msg);
-            }
-          }
-        }
-        //say
-        const sendChatAll = (msg) =>{
-          for(const id in connections){
-            const conn = connections[id];
-            if("chat" in conn.channels){
-              conn.channels["chat"].send(msg);
-            }
-          }
-        }
         //位置同期は全員に
         const sendTransform = (x,y) =>{
           const data = packTransform(x,y);
           for(const id in connections){
             const conn = connections[id];
-            if("transform" in conn.channels){
-              conn.channels["transform"].send(data);
-            }
+            conn.send("transform",data);
           }
         }
         var local_player = null;
@@ -469,8 +460,6 @@
           avatar.setup();
           local_player = new LocalPlayer({
             avatar:avatar,
-            sendChat:sendChat,
-            sendChatAll:sendChatAll,
             sendTransform:sendTransform,
             ticks:dic_ticks,
           });
@@ -479,7 +468,7 @@
         }
 
         
-        const crearteOther = (id,name) =>{
+        const createOther = (id,name) =>{
             const avatar = new BoxAvatar({
               id:id,
               name:name,
@@ -598,8 +587,6 @@
           constructor(param){
             const that = this;
             this.avatar = param.avatar;
-            this.sendChat = param.sendChat;
-            this.sendChatAll = param.sendChatAll;
             this.sendTransform = param.sendTransform;
             this.ticks = param.ticks;
             this.position = this.avatar.spawn;

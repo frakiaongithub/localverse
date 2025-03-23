@@ -353,9 +353,21 @@
               this.peer.close();
             }
           }
+
+          canSend(channel_name){
+            if(channel_name in this.channels){
+              return (this.channels[channel_name].readyState=="open");
+            }else{
+              return false;
+            }
+          }
           send(channel_name,data){
             if(channel_name in this.channels){
-              this.channels[channel_name].send(data);
+              if(this.channels[channel_name].readyState=="open"){
+                this.channels[channel_name].send(data);
+              }else{
+                console.log("channel ",channel_name ,"in",this.remote_id ," not open ",this.channels[channel_name].readyState);
+              }
             }
           }
         }
@@ -407,6 +419,8 @@
             ret = await doLogin();
           }
         }
+
+
         
         //シグナリングサーバからのログイン成功通知
         //このサンプルでは新規参加側がofferする
