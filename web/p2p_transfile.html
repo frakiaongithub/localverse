@@ -283,21 +283,20 @@
         
         
         //ここにいる時点でroomは指定されている。
-
-      //arrayBufferの配列を結合する
-      const joinArrayBuffer = (segments)=>{
-        var sumLength = 0;
-        for(var i = 0; i < segments.length; ++i){
-          sumLength += segments[i].byteLength;
+        //arrayBufferの配列を結合する
+        const joinArrayBuffer = (segments)=>{
+          var sumLength = 0;
+          for(var i = 0; i < segments.length; ++i){
+            sumLength += segments[i].byteLength;
+          }
+          var whole = new Uint8Array(sumLength);
+          var pos = 0;
+          for(var i = 0; i < segments.length; ++i){
+            whole.set(new Uint8Array(segments[i]),pos);
+            pos += segments[i].byteLength;
+          }
+          return whole.buffer;
         }
-        var whole = new Uint8Array(sumLength);
-        var pos = 0;
-        for(var i = 0; i < segments.length; ++i){
-          whole.set(new Uint8Array(segments[i]),pos);
-          pos += segments[i].byteLength;
-        }
-        return whole.buffer;
-      }
 
         const onCompleteFileReceive = async (id,transport_id) =>{
           //ファイル受信完了時処理
@@ -392,7 +391,7 @@
           };
           
           //転送予告を通知する
-          const transport_msg = {"mode":"file","transport_id":transport_id,"filename":filename,"filesize":filesize};
+          const transport_msg = {"mode":mode,"transport_id":transport_id,"filename":filename,"filesize":filesize};
           conn.send("transport",JSON.stringify(transport_msg));
           //通知を受けて受信側がデータチャネルを作ると送信側でondatachannelが発火する
         }
