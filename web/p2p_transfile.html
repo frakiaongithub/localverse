@@ -529,6 +529,14 @@
                 const channel = that.peer.createDataChannel(name);
                 that.setup_channel(name,channel)
               }
+
+              //転送用データチャネルはどっちがcreateDataChannelを実行するか不定なので両方にいる
+              that.peer.ondatachannel = (event) => {
+                const channel = event.channel;
+                //createDataChannelで指定した名前はリモートでもlabelの値に反映される
+                that.setup_channel(channel.label,channel);
+              }
+
               that.peer.onicecandidate = (evt)=> {
                 if (evt.candidate) {
                   console.log(evt.candidate);
