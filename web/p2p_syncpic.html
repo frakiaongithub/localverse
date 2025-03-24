@@ -1,0 +1,1373 @@
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/npm/three/build/three.module.js"
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <div  id="box_space" style="position:absolute;width:95vw;height:95vh">
+    </div>
+    <div  id="ui_chat" style="position:absolute;width:95vw;height:95vh">
+      <div style="width:95vw;height:calc(95vh - 30px);bottom:30px;right:0px;overflow-y: scroll;">
+        <ul id="log_list" >
+        </ul>
+      </div>
+      <div  style="left:0px;bottom:0px;width:95vw;height:30px;">
+        <button type="button" id="btn_move_room" style="width:70px">部屋移動</button>
+        <select id="members" style="width:120px"></select>
+        <input type="text" id="message" style="width:calc(90vw - 190px);">
+      </div>
+    </div>
+
+    <script type="module">
+      import * as THREE from "three";
+      const init = async () =>{
+
+        const server_port = 10514;
+        const server_url = "wss://"+location.hostname+":"+server_port+"/";
+        const token_name = "wss_auth_token";
+
+        const pc_config = {"iceServers":[]};//webrtc接続の設定
+        /*
+          stun/turnサーバなしの例 同じネットワーク内ならこれでよし
+          {"iceServers":[]} 
+          stunサーバを使う例 途中のルータの設定によってはつながらない
+          {'iceServers': [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+          ]}
+          turnサーバを使う例  ほとんどの場合つながる
+            ※これは架空の設定なので実際には使えない
+            ※turnサーバは基本的に自分で立てる必要がある。
+          {'iceServers': [
+            {
+              urls: "turns:turn3.example.net",
+              username: "12334939:fred",
+              credential: "adfsaflsjflds"
+            }
+          ]}
+        */
+        
+        //送信ファイル管理配列
+        //転送idをキーとしてファイルデータ・ファイルサイズ・ファイル名を値に持つ
+        var send_files = {};
+        //受信ファイル管理配列
+        //転送idをキーとして受信データ配列・ファイルサイズ・ファイル名を値に持つ
+        var recv_files = {};
+        
+        
+        const channels_def= {
+          "chat":{
+            onopen:(id)=>{
+              if(id in id2name){
+                appendLog("["+id2name[id]+"]に送信可能になりました");
+              }
+            },
+            "onmessage":(id,data)=>{
+              const sender_name = id2name[id];
+              try{
+                const info = JSON.parse(data);
+                var message= sender_name + ": "+info.message;
+                if(info.mode=="tell"){
+                  message= sender_name + ">>あなた: "+info.message;
+                }
+                appendLog(message);
+                sayOther(id,info.message);
+              }catch(e){
+              }
+            },
+          },
+          "transform":{
+            onopen:(id)=>{
+              if(id in id2name){
+                createOther(id,id2name[id]);
+              }
+            },
+            "onmessage":(id,data)=>{
+              moveOther(id,data);
+
+            },
+          },
+          "transport":{
+            onopen:(id)=>{
+              //送信可能になったのでアバター送信
+              sendAvatarImage(id);
+            },
+            "onmessage":(id,data)=>{
+              try{
+                const info = JSON.parse(data);
+                if(info.mode=="file" || info.mode=="avatar"){
+                  //送信側から送信予告が来た
+                  prepareReceiveFile(id,info);
+                }
+              }catch(e){
+              }
+              
+
+            },
+          }
+
+
+
+        };
+        /* P2P接続の通信内容を定義する辞書 
+           上の例はチャット用の設定
+           チャネル名をキーとして次の値を持つ
+            onopen: 接続時のイベントハンドラ 送信元idを受け取る
+            onmessage: 受信時のイベントハンドラ 送信元idとデータを受け取る
+        */
+
+
+        
+        var id2name = {};//接続idと名前の辞書
+        var self_id;//自分の接続id
+        var connections={};//接続管理変数 相手の接続idをキーとしてP2P接続を値とする辞書
+        
+        
+
+
+
+        const url = new URL(window.location.href);
+        //getパラメータによる初期ルーム = 部屋指定
+        const room = url.searchParams.get('room');
+        //getパラメータを抜いたurl = ワールド
+        const world = url.origin+url.pathname;
+        
+        //ui要素
+        const inp_message = document.getElementById("message");
+        const log_list = document.getElementById("log_list");
+        const sel_members = document.getElementById("members");
+        const btn_move_room = document.getElementById("btn_move_room");
+        
+        //アバター(箱)のコンテナ要素
+        const box_space = document.getElementById("box_space");
+
+
+        //非同期入力関数
+        //非同期prompt関数
+        const promptAsync = async (message_text,default_value="") => {
+          let dialog = document.createElement('dialog');
+          let message = document.createElement('p');
+          message.textContent = message_text;
+          dialog.appendChild(message);
+          let input = document.createElement('input');
+          input.value = default_value;
+          dialog.appendChild(input);
+          let ok_button = document.createElement('button');
+          ok_button.textContent = "決定";
+          if(!default_value){
+            ok_button.disabled = true;
+          }
+          dialog.appendChild(ok_button);
+          input.oninput = () =>{
+            ok_button.disabled = (input.value=="");
+          }
+          let cancel_button = document.createElement('button');
+          cancel_button.textContent = "中止";
+          dialog.appendChild(cancel_button);
+          
+          document.body.appendChild(dialog);;
+          dialog.showModal();
+          return new Promise(resolve => {
+            const eventBase = flag => () => {
+              //空入力でokした場合はキャンセル可能ならキャンセル扱い
+              //そうでない場合は無視
+              if(flag==true && input.value==""){
+                flag = false;
+              }
+              dialog.close();
+              ok_button.removeEventListener("click", okEvent);
+              cancel_button.removeEventListener("click", cancelEvent);
+              document.body.removeChild(dialog);
+              if(flag==true){
+                resolve(input.value);
+              }else if(flag==false){
+                resolve(false);
+              }else{
+                resolve(flag);
+              }
+            };
+            const okEvent = eventBase(true);
+            const cancelEvent = eventBase(false);
+            ok_button.addEventListener("click", okEvent);
+            cancel_button.addEventListener("click", cancelEvent);
+          });
+        };
+
+
+        //非同期ログイン入力関数
+        //user_id passwordを持つ連想配列を返す
+        const loginAsync = async () => {
+          let dialog = document.createElement('dialog');
+          let html = "";
+          html += "<table>";
+          html += "<tr>";
+          html += '<td align="right">';
+          html += "ID:";
+          html += "</td>";
+          html += "<td>";
+          html += '<input id="user_id">';
+          html += "</td>";
+          html += "</tr>";
+          html += "<tr>";
+          html += '<td align="right">';
+          html += "PASSWORD:";
+          html += "</td>";
+          html += "<td>";
+          html += '<input id="password" type="password">';
+          html += "</td>";
+          html += "</tr>";
+          html += "<tr>";
+          html += "<td colspan=2>";
+          html += '<input id="btn_login" type="button" value="LOGIN">';
+          html += "</td>";
+          html += "</tr>";
+          html += "</table>";
+          dialog.innerHTML = html;
+          document.body.appendChild(dialog);
+          const btn_login = document.getElementById('btn_login');
+          const inp_user_id = document.getElementById('user_id');
+          const inp_password = document.getElementById('password');
+          
+          dialog.showModal();
+          return new Promise(resolve => {
+            const eventBase = flag => () => {
+              //空入力でokした場合はキャンセル可能ならキャンセル扱い
+              //そうでない場合は無視
+              const user_id = inp_user_id.value;
+              const password = inp_password.value;
+              if(flag==true && (user_id=="" || password.value=="")){
+                flag = false;
+              }
+              dialog.close();
+              btn_login.removeEventListener("click", okEvent);
+              document.body.removeChild(dialog);
+              if(flag==true){
+                resolve({"user_id":user_id,"password":password});
+              }else if(flag==false){
+                resolve(false);
+              }else{
+                resolve(flag);
+              }
+            };
+            const okEvent = eventBase(true);
+            btn_login.addEventListener("click", okEvent);
+          });
+        };
+        
+        const moveRoom = async () =>{
+          const new_room = await promptAsync("部屋名を入力してください");
+          if(new_room){
+            location.href = world + "?room=" + new_room;
+            return true;
+          }else{
+            return false;
+          }
+        }
+        
+        //部屋名必須
+        if(!room){
+          while(true){
+            const ret = await moveRoom();
+            if(ret){
+              break;
+            }
+          }
+          return;
+        }
+        
+        
+        //ここにいる時点でroomは指定されている。
+        
+        //indexedDBを扱いやすくするラッパークラス
+        class DB{
+          constructor(db_name,storenames){
+            this.db_name = db_name;
+            this.storenames = storenames;
+            this.db = null;
+            this.stores = {};
+          }
+          
+          
+          _opendb(){
+            const that =this;
+            return new Promise((resolve,reject) => {
+              try {
+                const request = window.indexedDB.open(that.db_name, 3);
+                request.onupgradeneeded = (event) => {
+                  const db = event.target.result;
+                  for(const storename of that.storenames){
+                    if (!db.objectStoreNames.contains(storename)) {
+                      db.createObjectStore(storename, { keyPath: 'id' });
+                    }
+                  }
+                };
+                request.onsuccess = (event) => {
+                  const db = event.target.result;
+                  resolve(db);
+                };
+                request.onerror = (event) => {
+                  console.log(event.target.error);
+                  reject(null);
+                };
+              } catch (error) {
+                console.log(error);
+                reject(error);
+              }
+            });
+          }
+          
+          async openDatabase(){
+            //setData/getDataを使う前にこれをawaitで実行する
+            this.db = await this._opendb();
+          }
+          closeDatabase(){
+            if(this.db){
+              this.db.close();
+              this.db = null;
+            }
+          }
+          removeDatabase(){
+            //何故か開発ツールでdbごと消す機能がないので実装
+            //アンインストール的なことをする場合に呼ぶ想定
+            this.closeDatabase();//openしている場合閉じないと削除できない。
+            const req= window.indexedDB.deleteDatabase(this.db_name);
+            req.onsuccess = (event) => {
+              console.log("データベース["+this.db_name+"]が正常に削除されました。");
+            };
+            req.onerror  = (e) =>{
+              console.log("データベース["+this.db_name+"]の削除に失敗しました。");
+            };
+          }
+          
+          getStore(storename){
+            if(storename in this.stores){
+              return this.stores[storename];
+            }else{
+              const transaction =  this.db.transaction([storename], 'readwrite');
+              return transaction.objectStore(storename);
+            }
+          }
+          
+          getData(storename,key){
+            const that = this;
+            const store = this.getStore(storename);
+            return new Promise((resolve,reject) => {
+              try{
+                const request = store.get(key);
+                request.onsuccess = (event) => {
+                  if (event.target) {
+                    const result = event.target.result;
+                    if(result){
+                      resolve(result.data);
+                    }else{
+                      resolve(null);
+                    }
+                  }
+                };
+              }catch(e){
+                console.log(e);
+                reject(null);
+              }
+            });
+          }
+          
+          setData(storename,key,value){
+            const that = this;
+            const store = this.getStore(storename);
+            return new Promise((resolve,reject) => {
+              try{
+                const request = store.put({id:key,data:value});
+                request.onsuccess = (event) => {
+                  resolve(true);
+                };
+              }catch(e){
+                console.log(e);
+                reject(false);
+              }
+            });
+          }
+        }
+        
+        const db = new DB("p2p_syncpic",["image"]);
+        await db.openDatabase();
+
+
+        
+        //arrayBufferの配列を結合する
+        const joinArrayBuffer = (segments)=>{
+          var sumLength = 0;
+          for(var i = 0; i < segments.length; ++i){
+            sumLength += segments[i].byteLength;
+          }
+          var whole = new Uint8Array(sumLength);
+          var pos = 0;
+          for(var i = 0; i < segments.length; ++i){
+            whole.set(new Uint8Array(segments[i]),pos);
+            pos += segments[i].byteLength;
+          }
+          return whole.buffer;
+        }
+
+        const onCompleteFileReceive = async (id,transport_id) =>{
+          //ファイル受信完了時処理
+          const info = recv_files[transport_id];
+          const filename = info.filename;
+          const mode = info.mode;
+          const data = joinArrayBuffer(info.chunks);
+          if(mode=="file"){
+            //チャットログにリンクを張る
+            var blob = new Blob([data], {type: "octet/stream"});
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.download = filename;
+            a.href = url;
+            a.target = "_blank";
+
+            const name = id2name[id];
+            a.innerHTML = "ダウンロード";
+
+            const li = document.createElement("li");
+            li.textContent = name+"が"+filename+"を送信しました ";
+            li.appendChild(a);
+            appendLogElement(li);
+
+          }else if(mode=="avatar"){
+            setRemoteAvatarImage(id,data);
+          }
+        }
+        //ファイル転送予告を受信したときの処理
+        const prepareReceiveFile= (id,info)=>{
+          const mode = info.mode;
+          const transport_id = info.transport_id;//転送id
+          const filename = info.filename;
+          const filesize = info.filesize;
+          //管理変数に情報を積む
+          recv_files[transport_id]={
+            "mode":mode,
+            "sender":id,
+            "filename":filename,
+            "filesize":filesize,
+            "chunks":[],
+          };
+          const conn = connections[id];
+          //ファイル転送用データチャネル作成
+          const peer = conn.peer;
+          const channel = peer.createDataChannel(transport_id);
+          var amount = 0;//受信済みサイズ
+          channel.onmessage = async (event) =>{
+            const piece = event.data;
+            recv_files[transport_id].chunks.push(piece);
+            amount += event.data.byteLength;
+            if(amount>=filesize){
+              //受信完了
+              await onCompleteFileReceive(id,transport_id);
+              //管理配列から削除
+              delete recv_files[transport_id];
+              //受信側で閉じる
+              channel.close();
+            }
+          };
+        };
+        
+
+        var transport_count = 0;//ファイル転送回数
+        //ファイル転送通知処理
+        const prepareSendFile = (sender,target,filename,data,mode="file") =>{
+          if(!(target in connections)){
+            //接続確立前
+            return;
+          }
+          const conn = connections[target];
+          if(!conn.canSend("transport")){
+            //送信可能になる前
+            if(target in id2name){
+              appendLog(id2name[target]+"はファイル受信できない状態です");
+            }
+          }
+          
+          
+          //全員に送りたい場合は人数分呼ぶ
+          const filesize = data.byteLength;
+          transport_count += 1;
+          //転送id決定
+          const transport_id = "file_" + sender + "_"+transport_count;
+          //管理変数に情報を積む
+          send_files[transport_id]={
+            "mode":mode,
+            "target":target,
+            "filename":filename,
+            "filesize":filesize,
+            "data":data,
+          };
+          
+          //転送予告を通知する
+          const transport_msg = {"mode":mode,"transport_id":transport_id,"filename":filename,"filesize":filesize};
+          conn.send("transport",JSON.stringify(transport_msg));
+          //通知を受けて受信側がデータチャネルを作ると送信側でondatachannelが発火する
+        }
+        
+        //ファイル転送送信側処理
+        const startSendFile = async (channel,transport_id) =>{
+          const info = send_files[transport_id];
+          const data = info.data;
+          const total = data.byteLength;
+          let remain = total;
+          const chunk = 50*1024;//上限は64kbだが余裕を見て50kb
+          let begin = 0;
+          let end = chunk;
+          if( end > total ){
+            end = total;
+          };
+          const limit = 65535 - chunk;//上限 - chunkサイズ の空きがあれば大丈夫と考える
+          channel.bufferedAmountLowThreshold = limit;
+          //１回分の送信処理
+          const proc_send = () =>{
+            //切り出し
+            let buff = data.slice(begin,end);
+            channel.send(buff);
+            let sz = buff.byteLength;
+            remain -= sz;
+            console.log(transport_id,"remain",remain);
+            begin += sz;
+            end = begin+chunk;
+            if( remain < 1 ){
+              //完了したのでイベント削除
+              channel.removeEventListener("bufferedamountlow",proc_send,false);
+              console.log("upload done",transport_id);
+              if(info.target in id2name){
+                const name = id2name[info.target];
+                appendLog(info.filename+"の" + name + "への送信が完了しました。");
+                //管理配列から削除する
+                delete send_files[transport_id];
+              }
+              //この時点で閉じるとまだ転送中で受信失敗するので閉じるのは受信側
+            };
+          };
+          //キューに空きが出来たら送信するイベント設定
+          channel.addEventListener("bufferedamountlow",proc_send,false);
+          //初回送信
+          proc_send();
+          
+        }
+
+
+        
+        const onUnknownChannel = (channel) =>{
+          if(channel.label in send_files){
+            //ファイル転送用データチャネルが湧いた
+            const transport_id = channel.label;
+            channel.onopen = () =>{
+              //開通したので分割送信する
+              startSendFile(channel,transport_id);
+            };
+          };
+        }
+
+        window.addEventListener( 'dragover',( event )=>{
+          event.preventDefault();
+        } );
+        //ファイルドロップ処理
+        window.addEventListener( 'drop', async ( event )=>{
+
+          event.preventDefault();
+
+          // read given file then convert it to blob url
+          const files = event.dataTransfer.files;
+          if ( ! files ) return;
+
+          const file = files[ 0 ];
+          if ( ! file ) return;
+
+          const fileType = file.name.split( '.' ).pop().toLowerCase();
+          const buffer = await file.arrayBuffer()
+          const filename = file.name;
+
+          const is_image = filename.match('.(jpeg|jpg|png|bmp|gif)$');
+          if(is_image){
+            //画像の場合はアバター設定扱いにする
+            setLocalAvatarImage(buffer,filename)
+          }
+          //受信後の処理を分けたいのでモード指定
+          const mode = is_image?"avatar":"file";
+          
+          const sender = self_id;
+          //発信対象に対してファイルを転送する
+          appendLog(filename+ "の送信を開始しました。");
+          if(sel_members.selectedIndex > 0 && mode!="avatar"){
+            //個別指定あり
+            //アバターの場合は強制的に全体送信
+            const target = sel_members.options[sel_members.selectedIndex].value;
+            prepareSendFile(sender,target,filename,buffer,mode);
+          }else{
+            //全体送信
+            for(const target in connections){
+              prepareSendFile(sender,target,filename,buffer,mode);
+            }
+          }
+        });
+
+        /* 
+        シグナリング処理は接続毎に必要なのでクラスにまとめている。
+        */
+        class P2PConnection {
+          constructor(param){
+            this.local_id = param.local_id;//自分の接続id
+            this.remote_id = param.remote_id;//接続先id
+            this.pc_config = param.pc_config;//webrtc接続設定
+            this.channels_def = param.channels_def;//データチャネル設定
+            this.onUnknownChannel = param.onUnknownChannel;//chanels_defにないデータチャネルの処理
+            this.channels = {};//データチャネル管理変数 チャネル名をキーとする
+            this.onConnect = param.onConnect;//p2p接続確立時のイベントハンドラ
+            this.onDisconnect = param.onDisconnect;//p2p接続切断時のイベントハンドラ
+            this.peer = null;//RTCPeerConnectionのインスタンス保持
+          };
+          setup_channel(name,channel){
+            const that = this;
+            //channels_defに基づいて設定
+            if(name in this.channels_def){
+              channel.onopen = () =>{
+                this.channels_def[name].onopen(this.remote_id);
+              }
+              channel.onmessage = (event) =>{
+                this.channels_def[name].onmessage(this.remote_id,event.data);
+              }
+              this.channels[name]=channel;
+            }else{
+              //未定義チャネル
+              this.onUnknownChannel(channel);
+            }
+            
+          }
+
+          async offer(){
+            const that=this;
+            return new Promise( async (resolve) => {
+              that.peer = new RTCPeerConnection(that.pc_config);
+              //offerの場合は能動的にchannel追加
+              for(const name in that.channels_def){
+                const channel = that.peer.createDataChannel(name);
+                that.setup_channel(name,channel)
+              }
+
+              //転送用データチャネルはどっちがcreateDataChannelを実行するか不定なので両方にいる
+              that.peer.ondatachannel = (event) => {
+                const channel = event.channel;
+                //createDataChannelで指定した名前はリモートでもlabelの値に反映される
+                that.setup_channel(channel.label,channel);
+              }
+
+
+
+              that.peer.onicecandidate = (evt)=> {
+                if (evt.candidate) {
+                  console.log(evt.candidate);
+                } else {
+                  //この時点でsdpが確定する
+                  console.log('empty ice event');
+                  //コールバックだと見通しが悪いのでPromiseで値を返す
+                  resolve(that.peer.localDescription);
+                }
+              };
+              that.peer.onconnectionstatechange = (ev) => {
+                console.log("onconnectionstatechange",that.peer.connectionState);
+                if(that.peer.connectionState=="disconnected"){
+                  if(that.onDisconect){
+                    that.onDisconect(that.remote_id);
+                  }
+                }else if(that.peer.connectionState=="connected"){
+                  if(that.onConnect){
+                    that.onConnect(that.remote_id);
+                  }
+                }
+              };
+              const sessionDescription = await that.peer.createOffer();
+              that.peer.setLocalDescription(sessionDescription);
+            });
+          }
+
+
+
+          async answer(offerSDP){
+            const that = this;
+            return new Promise( async (resolve) => {
+              that.peer = new RTCPeerConnection(that.pc_config);
+              const offer = new RTCSessionDescription({
+                type : 'offer',
+                sdp : offerSDP,
+              });
+              await that.peer.setRemoteDescription(offer);
+
+              //answer側ではcreateではなくイベントでdatachannelを取得する
+              that.peer.ondatachannel = (event) => {
+                const channel = event.channel;
+                //createDataChannelで指定した名前はリモートでもlabelの値に反映される
+                that.setup_channel(channel.label,channel);
+              }
+
+              that.peer.onicecandidate = (evt)=> {
+                if (evt.candidate) {
+                  console.log(evt.candidate);
+                } else {
+                  //この時点でsdpが確定する
+                  console.log('empty ice event');
+                  //コールバックだと見通しが悪いのでPromiseで値を返す
+                  resolve(that.peer.localDescription);
+                }
+              };
+
+              this.peer.onconnectionstatechange = (ev) => {
+                console.log("onconnectionstatechange",that.peer.connectionState);
+                if(that.peer.connectionState=="disconnected"){
+                  if(that.onDisconnect){
+                    that.onDisconnect(that.remote_id);
+                  }
+                }else if(that.peer.connectionState=="connected"){
+                  if(that.onConnect){
+                    that.onConnect(that.remote_id);
+                  }
+                }
+              };
+              const answer = await that.peer.createAnswer();
+              that.peer.setLocalDescription(answer);
+            });
+
+          }
+
+          async finishOffer(answerSDP){
+            const answer = new RTCSessionDescription({
+              type : 'answer',
+              sdp : answerSDP,
+            });
+            await this.peer.setRemoteDescription(answer);
+            console.log("finish offer");
+          }
+          close(){
+            if(this.peer){
+              this.peer.close();
+            }
+          }
+          canSend(channel_name){
+            if(channel_name in this.channels){
+              return (this.channels[channel_name].readyState=="open");
+            }else{
+              return false;
+            }
+          }
+          
+          send(channel_name,data){
+            if(channel_name in this.channels){
+              if(this.channels[channel_name].readyState=="open"){
+                this.channels[channel_name].send(data);
+              }else{
+                console.log("channel ",channel_name ,"in",this.remote_id ," not open ",this.channels[channel_name].readyState);
+              }
+            }
+          }
+        }
+        
+        
+        //オブジェクト毎に更新処理はありうるのでそれを積む辞書
+        const dic_ticks = {};
+        //インスタンス破棄等で不要になったら辞書から削除する
+        //更新関数の引数は前のフレームからの経過時間
+        const clock = new THREE.Clock()
+        // 毎フレーム実行される関数
+        const animation_loop = () =>{
+          const dt = clock.getDelta();//前のフレームからの経過時間
+          //登録済みの更新関数を実行する
+          for(const key in dic_ticks){
+            dic_ticks[key](dt);
+          }
+          requestAnimationFrame(animation_loop);
+        };
+        
+        //送信用に x y を ArrayBuffer(8)に変換する
+        const packTransform = (x,y)=> {
+          const buffer =new ArrayBuffer(4+4);
+          const view =  new DataView(buffer);
+          view.setFloat32(0,x);
+          view.setFloat32(4,y);
+          return buffer;
+        };
+        
+        //受信したArrayBufferを x y に変換する
+        const unpackTransform = (buffer) =>{
+          var view = new DataView(buffer);
+          return {
+            x:view.getFloat32(0),
+            y:view.getFloat32(4),
+          };
+        }
+        
+
+        var avatars = {};//接続idとアバターの辞書。値は後で定義するBoxAvatarクラス
+        
+        //位置同期は全員に
+        const sendTransform = (x,y) =>{
+          const data = packTransform(x,y);
+          for(const id in connections){
+            const conn = connections[id];
+            conn.send("transform",data);
+          }
+        }
+        var local_player = null;
+        const createLocalPlayer = (id,name) =>{
+          const avatar = new BoxAvatar({
+            id:id,
+            name:name,
+            container:box_space
+          });
+          avatars[id]=avatar;
+          avatar.setup();
+          local_player = new LocalPlayer({
+            avatar:avatar,
+            sendTransform:sendTransform,
+            ticks:dic_ticks,
+          });
+          //ローカルプレイヤーが生成された時点で時間は回り始めることにする
+          animation_loop();
+        }
+
+        
+        const createOther = (id,name) =>{
+            const avatar = new BoxAvatar({
+              id:id,
+              name:name,
+              container:box_space
+            });
+            avatars[id]=avatar;
+            avatar.setup();
+        }
+
+        const removeOther = (id) =>{
+          if(id in avatars){
+            avatars[id].dispose();
+            delete avatars[id];
+          }
+        }
+
+        const moveOther = (id,data) =>{
+          if(id in avatars){
+            const pos = unpackTransform(data);
+            avatars[id].moveTo(pos.x,pos.y);
+          }
+        }
+        
+        const sayOther = (id,message) =>{
+          if(id in avatars){
+            avatars[id].say(message);
+          }
+        }
+        
+        var local_avatar_image_data = null;
+        var local_avatar_image_name = null;
+        
+        //他のプレイヤーにアバターを送信する
+        const sendAvatarImage = async (id) =>{
+          if(!local_avatar_image_data){
+            //アバターデータなしなら通知しない
+            return;
+          }
+          prepareSendFile(self_id,id,local_avatar_image_name,local_avatar_image_data,"avatar");
+        }
+        
+        //ローカルアバター作成時
+        const restoreLocalAvatarImage = async () =>{
+          const info = await db.getData("image","my_avatar");
+          if(info){
+            if(self_id in avatars){
+              avatars[self_id].setImage(info.data);
+            }
+            local_avatar_image_data = info.data;
+            local_avatar_image_name = info.filename;
+          }
+        };
+        
+        //ユーザー操作でアバター設定したとき
+        const setLocalAvatarImage = async (data,filename) =>{
+          if(self_id in avatars){
+            avatars[self_id].setImage(data);
+          }
+          local_avatar_image_data = data;
+          local_avatar_image_name = filename;
+          //indexedDBへの保存
+          await db.setData("image","my_avatar",{"filename":filename,"data":data});
+        }
+        //リモートアバターを受信完了したとき
+        const setRemoteAvatarImage = (id,data) =>{
+          if(id in avatars){
+            avatars[id].setImage(data);
+          }
+        }
+
+
+        //domの箱を暫定的にアバターとして表示するためのクラス
+        //接続確立時に生成する
+        class BoxAvatar{
+          constructor(param){
+            this.id = param.id;
+            this.name = param.name;
+            this.container = param.container;
+            //出現位置
+            if(param.spawn){
+              this.spawn = param.spawn;
+            }else{
+              this.spawn = {x:this.container.clientWidth/2, y:this.container.clientHeight/2};
+            }
+            this.avatar = null;//アバター用dom
+            this.name_label = null;//名札用dom
+            this.chat_label = null;//チャット表示用dom
+          }
+
+
+          setImage(data){
+            const blob = new Blob([data]);
+            let url =  window.URL.createObjectURL(blob);
+            this.avatar.style.background='url("'+ url +'")';
+            this.avatar.style.backgroundSize='contain';
+          }
+          
+          
+          setup(){
+            const avatar = document.createElement("div");
+            avatar.style.border =  "solid 1px black";
+            avatar.style.backgroundColor = "#EEEEFF";
+            avatar.style.width ="32px";
+            avatar.style.height ="32px";
+            avatar.style.position = "absolute";
+            avatar.style.left = this.spawn.x;
+            avatar.style.top = this.spawn.y;
+            this.avatar = avatar;
+            
+            
+            const name_label = document.createElement("div");
+            name_label.style.width ="100px";
+            name_label.style.height ="16px";
+            name_label.style.position = "absolute";
+            name_label.style.left = "0px";
+            name_label.style.top = "-24px";
+            name_label.color = "blue";
+            name_label.textContent = this.name;
+            this.name_label = name_label;
+            this.avatar.appendChild(this.name_label);
+
+            const chat_label = document.createElement("div");
+            chat_label.style.width ="200px";
+            chat_label.style.height ="16px";
+            chat_label.style.position = "absolute";
+            chat_label.style.left = "32px";
+            chat_label.style.top = "0px";
+            chat_label.color = "black";
+            this.chat_label = chat_label;
+            this.avatar.appendChild(this.chat_label);
+            
+            this.container.appendChild(this.avatar);
+            
+          }
+          dispose(){
+            if(this.avatar){
+              this.container.removeChild(this.avatar);
+            }
+          }
+          
+          say(msg){
+            const that = this;
+            const piece = document.createElement('span');
+            piece.textContent ="<"+ msg;
+            this.chat_label.appendChild(piece);
+            setTimeout(()=>{
+              this.chat_label.removeChild(piece);
+            },1000);
+          }
+          
+          //移動 こっちでは補完処理等はしない
+          moveTo(x,y){
+            if(this.avatar){
+              this.avatar.style.left =x;
+              this.avatar.style.top  = y;
+            }
+          }
+          
+        }
+        
+        
+        //ローカルプレイヤーの入力と更新処理
+        class LocalPlayer{
+          constructor(param){
+            const that = this;
+            this.avatar = param.avatar;
+            this.sendTransform = param.sendTransform;
+            this.ticks = param.ticks;
+            this.position = this.avatar.spawn;
+            this.input_x = 0;
+            this.input_y = 0;
+            this.speed = 32;
+            this.ticks["local_player"] = (dt) =>{
+              that.tick(dt);
+            };
+            this.last_transform_send = 0;
+
+
+            window.addEventListener("keydown",(e)=>{
+              //ui操作で移動してほしくないので
+              //フォーカスを持っている要素のtagNameがinput selectのいずれかの場合は無視
+              if(document.activeElement){
+                const tag = document.activeElement.tagName;
+                if(tag=="SELECT" || tag=="INPUT"){
+                  return;
+                }
+              }
+
+              //移動入力値更新
+              const code = e.code;
+              if(code=="KeyW"){
+                that.input_y=-1;
+              }else if(code=="KeyS"){
+                that.input_y=1;
+              }else if(code=="KeyA"){
+                that.input_x = -1;
+              }else if(code=="KeyD"){
+                that.input_x = 1;
+              }
+            });
+            window.addEventListener("keyup",(e)=>{
+
+              //ui操作で移動してほしくないので
+              //フォーカスを持っている要素のtagNameがinput selectのいずれかの場合は無視
+              if(document.activeElement){
+                const tag = document.activeElement.tagName;
+                if(tag=="SELECT" || tag=="INPUT"){
+                  return;
+                }
+              }
+              //移動入力値更新
+              const code = e.code;
+              if(code=="KeyW"){
+                that.input_y=0;
+              }else if(code=="KeyS"){
+                that.input_y=0;
+              }else if(code=="KeyA"){
+                that.input_x = 0;
+              }else if(code=="KeyD"){
+                that.input_x = 0;
+              }
+            });
+          }
+          tick(dt){
+            //移動入力*変位
+            var ox = this.position.x;
+            var oy = this.position.y;
+            var ax = ox + this.input_x * dt * this.speed; 
+            var ay = oy + this.input_y * dt * this.speed; 
+            //入力なしでも一定時間で送信しないと新参に届かない
+            const need_send = this.last_transform_send < Date.now() -1000;
+
+            if(this.input_x != 0 || this.input_y != 0 || need_send){
+              this.position.x = ax;
+              this.position.y = ay;
+              sendTransform(ax,ay);
+              this.last_transform_send = Date.now();
+              this.avatar.moveTo(ax,ay);
+
+            };
+            //console.log(ax,ay);
+          }
+
+        }
+        
+        //ログ表示
+        const appendLog  = (msg) => {
+          const li = document.createElement("li");
+          li.textContent = msg;
+          log_list.appendChild(li);
+          li.scrollIntoView();
+        };
+        const appendLogElement  = (li) => {
+          log_list.appendChild(li);
+          li.scrollIntoView();
+        };
+
+
+        //シグナリングサーバとの接続
+        const ws = new WebSocket(server_url);
+        
+        const doAuth = async (token) =>{
+          const auth_msg = {"mode":"auth","token":token,"world":world,"room":room};
+          ws.send(JSON.stringify(auth_msg));
+        };
+        
+        const doLogin = async () =>{
+          const info = await loginAsync();
+          if(!info){
+            return false;
+          }else{
+            const login_msg = {"mode":"login","user_id":info.user_id,"password":info.password,"world":world,"room":room};
+            ws.send(JSON.stringify(login_msg));            
+            return true;
+          }
+        };
+        
+        const onConnect = async () =>{
+          const token = sessionStorage.getItem(token_name);
+          if(token){
+            //tokenによる認証を試みる
+            await doAuth(token);
+          }else{
+            //idとパスワードによる認証を試みる
+            let ret = false;
+            while(!ret){
+              ret = await doLogin();
+            }
+          }
+        }
+        
+        const onNeedLogin = async () =>{
+          let ret = false;
+          while(!ret){
+            ret = await doLogin();
+          }
+        }
+        
+        //シグナリングサーバからのログイン成功通知
+        //このサンプルでは新規参加側がofferする
+        const onWelcome = async (info)=>{
+
+          //トークン保存
+          const token = info.token;
+          sessionStorage.setItem(token_name,token);
+          
+          self_id = info.id;
+          
+          //入力処理登録
+          createLocalPlayer(info.id,info.name);
+          
+          //アバター復元
+          await restoreLocalAvatarImage();
+          //この時点では接続確立していないのでまだ送信できない
+          
+
+          //部屋移動したのでメンバーリスト再構成
+          while(sel_members.length>0){
+            sel_members.remove(0);
+          };
+          //membersから再構成
+          id2name = {};
+          {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.text = "全体発信";
+            sel_members.add(opt);
+          }
+          for(const m of info.members){
+            const opt = document.createElement("option");
+            opt.value = m.id;
+            opt.text = m.name;
+            sel_members.add(opt);
+            id2name[m.id]=m.name;
+          }
+          appendLog(room+"に参加しました");
+          console.log(id2name);
+          
+          //既存メンバーにoffer投げる
+          for(const target in id2name){
+            startOffer(target);
+          }
+          
+          //この時点で入力を受け付けるようにする。
+          //実際に届くようになるのはp2p接続確立後
+          inp_message.addEventListener('keydown', (e) => {
+            //keyCodeは非推奨だが日本語変換と判別する都合これしかない
+            if(!inp_message.value){
+              //メッセージなし
+              return;
+            }
+            if(e.keyCode === 13) {
+              const target = sel_members.options[sel_members.selectedIndex].value;
+              const message_body = inp_message.value;
+              const target_name = id2name[target]; 
+              
+              //アバターからの発言表示
+              local_player.avatar.say(message_body);
+              
+              if(target){
+                const tell_msg = {"mode":"tell","target":target,"message":message_body};
+
+                if(target in connections){
+                  connections[target].send("chat",JSON.stringify(tell_msg))
+                }
+                appendLog("あなた>>"+target_name+": "+message_body);
+              }else{
+                const say_msg = {"mode":"say","target":target,"message":message_body};
+                for(const id in connections){
+                  connections[id].send("chat",JSON.stringify(say_msg))
+                }
+                appendLog("あなた: "+message_body);
+              }
+              inp_message.value="";
+            }
+          });
+          btn_move_room.onclick= async (e) =>{
+            await moveRoom();
+          };
+        }
+
+
+
+
+        //シグナリングサーバからの参加通知処理
+        //このサンプルでは、新規参加側がofferするのでここではofferしない
+        const onJoin = (info) =>{
+          //参加したメンバーを追加
+          const opt = document.createElement("option");
+          opt.value = info.id;
+          opt.text = info.name;
+          sel_members.add(opt);
+          appendLog("["+info.name+"]が参加しました");
+          id2name[info.id]= info.name;
+          console.log(id2name);
+          
+        }
+        
+        //シグナリングサーバからの離脱通知処理
+        const onLeave = (info) =>{
+          //離脱したメンバーを削除
+          var name = id2name[info.id];
+          for(let i=0;i<sel_members.length;i++){
+            const opt = sel_members.options[i];
+            if(opt.value == info.id){
+              sel_members.remove(i);
+              delete id2name[info.id];
+              if(info.id in connections){
+                connections[info.id].close();
+                delete connections[info.id];
+              }
+              //アバター削除
+              removeOther(info.id);
+              break;
+            }
+          }
+          appendLog("["+name+"]が離脱しました");
+          console.log(id2name);
+        }
+        
+        //offer開始処理
+        const startOffer = async (target) =>{
+          const conn = new P2PConnection({
+            local_id:self_id,
+            remote_id:target,
+            pc_config:pc_config,
+            channels_def:channels_def,
+            onConnect:onConnectP2P,
+            onClose:onDisconnectP2P,
+            onUnknownChannel:onUnknownChannel,
+          });
+          connections[target] = conn;
+          const desc = await conn.offer();
+          sendOffer(self_id,target,desc);
+        };
+
+
+        //シグナリングサーバからのoffer受信時処理
+        const onOffer = async (info) =>{
+          const conn = new P2PConnection({
+            local_id:self_id,
+            remote_id:info.sender,
+            pc_config:pc_config,
+            channels_def:channels_def,
+            onConnect:onConnectP2P,
+            onDisconnecte:onDisconnectP2P,
+            onUnknownChannel:onUnknownChannel,
+          });
+          connections[info.sender] = conn;
+          const desc = await conn.answer(info.description.sdp);
+          sendAnswer(self_id,info.sender,desc);
+        }
+
+        //シグナリングサーバからのanswer受信時処理
+        const onAnswer = async (info) =>{
+          if(info.sender in connections){
+            await connections[info.sender].finishOffer(info.description.sdp);
+          }
+        }
+
+        //P2P接続時イベント
+        const onConnectP2P = (from) =>{
+          if(from in id2name){
+            appendLog(id2name[from]+"とのP2P接続が確立しました。");
+          }
+        }
+
+        //P2P切断時イベント
+        const onDisconnectP2P = (from) =>{
+          if(from in id2name){
+            appendLog(id2name[from]+"とのP2P接続が切断されました。");
+          }
+        }
+        
+        //offerをシグナリングサーバに送信する関数
+        const sendOffer = (from,to,description) =>{
+          const offer_msg = {"mode":"offer","target":to,"description":description};
+          ws.send(JSON.stringify(offer_msg));
+        }
+
+        //answerをシグナリングサーバに送信する関数
+        const sendAnswer = (from,to,description) =>{
+          const answer_msg = {"mode":"answer","target":to,"description":description};
+          ws.send(JSON.stringify(answer_msg));
+        }
+
+
+        
+        var connected = false;
+        ws.onopen = (event) => {
+          connected = true;
+          appendLog("シグナリングサーバに接続しました");
+          onConnect();
+        };
+        ws.onclose = (event) => {
+          if(connected){
+            appendLog("シグナリングサーバとの接続が切断されました");
+          }
+        };
+        ws.onerror = async (event) => {
+          if(ws.readyState==3){
+            appendLog("シグナリングサーバに接続できません");
+          }else{
+            appendLog("通信エラーが発生");
+          }
+        };
+        //シグナリングサーバからのメッセージ処理
+        ws.onmessage = (event) =>{
+          const message = event.data;
+          console.log(message);
+          const info = JSON.parse(message);
+          if(info.mode=="need_login"){
+            onNeedLogin();
+          }else if(info.mode=="welcome"){
+            onWelcome(info);
+          }else if(info.mode=="join"){
+            onJoin(info);
+          }else if(info.mode=="leave"){
+            onLeave(info);
+          }else if(info.mode=="offer"){
+            onOffer(info);
+          }else if(info.mode=="answer"){
+            onAnswer(info);
+          }else if(info.mode=="attacked"){
+            appendLog("何者かがあなたのアカウントでログインを試みています");
+          }else if(info.mode=="sameuser"){
+            appendLog("同じアカウントでログインしている人がいます");
+          }
+        };
+      };
+      init();
+    </script>
+  </body>
+</html>
