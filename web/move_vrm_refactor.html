@@ -148,9 +148,37 @@
             if(param.spawn){
               this.container.position.set(param.spawn.x,param.spawn.y,param.spawn.z);
             };         
+
+            this.rotate_speed = param.rotate_speed?param.rotate_speed:1;
+
             this.ticks[this.tick_name] = (dt) =>{
               that.tick(dt);
             }
+            
+            if(!param.procVelocity){
+              console.error("procVelocityが指定されてません");
+            }
+            this.procVelocity = param.procVelocity?param.procVelocity:()=>{};
+            if(!param.procMotion){
+              console.error("procMotionが指定されてません");
+            }
+            this.procMotion = param.procMotion?param.procMotion:()=>{};
+
+            //
+            this.procMove = param.procMove?param.procMove:this.defaultProcMove;
+
+
+            //操作系入力保存
+            this.input = {forward:0,right:0,rotate:0};
+            //入力情報最終更新
+            this.last_input_time = 0;
+
+            this.velocity = {x:0,y:0,z:0};
+            this.position = {x:0,y:0,z:0,ry:0};
+            
+            //同期入力保存
+            this.wish_pos = {x:0,y:0,z:0,ry:0};
+            
 
             //アバターから見た前・右・上の単位ベクトル計算用
             this.vec_forward = new THREE.Vector3();
@@ -170,6 +198,36 @@
             this.chatLabel = null;
             this.onclick = param.onclick;
             this.addNamePlate();
+          }
+          
+          //ローカルプレイヤーの入力情報更新時
+          setInput(forward,right,rotate){
+            this.input.forward = forward;
+            this.input.right = right;
+            this.last_input_time = Date.now();
+            this.procVelocity(this);
+          }
+          //カメラ操作による向き変更時
+          setInputRotate(rotate){
+            this.input.rotate = rotate;
+            this.last_input_time = Date.now();
+          }
+          
+          //速度設定
+          setVelocity(vx,vy,vz){
+            this.velocity.x = vx;
+            this.velocity.y = vz;
+            this.velocity.z = vz;
+          }
+          
+          //リモートプレイヤーの位置情報受信時
+          setRemoteInput(x,y,z,ry,forward,right,rotate,vx,vy,vz){
+            this.teleport(x,y,z,ry);
+            //リモートの場合は速度は入力値で計算しない
+            this.input.forward = forward;
+            this.input.right = right;
+            this.input.rotate = rotate;
+            this.setVelocity(vx,vy,vz);
           }
 
           removeNamePlate(){
@@ -226,8 +284,14 @@
           
           tick(dt){
             if(this.vrm){
+              //移動解決
+              this.procMove(this,dt);
+              //モーション制御
+              this.procMotion(this,dt);
+              //vrm更新
               this.vrm.update(dt);
               if(this.mixer){
+                //モーション解決
                 this.mixer.update(dt);
               }
             }
@@ -350,11 +414,30 @@
           
           rotate(rot){
             this.container.rotation.y += rot;
+            this.position.ry = this.container.rotation.y;
           }
+          
+          defaultProcMove(avatar,dt){
+            //速度による移動解決
+            //物理演算を導入する場合はコンストラクタにprocMoveを指定して
+            //そっちで解決する
+            const dx = this.velocity.x * dt;
+            const dy = this.velocity.y * dt;
+            const dz = this.velocity.z * dt;
+            const dry = this.input.rotate * this.rotate_speed * dt
+            //console.log("dry",dry);
+            const ax = this.position.x + dx;
+            const ay = this.position.y + dy;
+            const az = this.position.z + dz;
+            const ary = this.position.ry + dry;
+            
+            this.teleport(ax,ay,az,ary);
 
+          }
+          
           move(forward,right,up){
             //現在の向きに対する変位量指定での移動
-            //入力値は変位量
+            //入力値は変位量\
             this.calcDirection();
             //前後入力分
             this.move_vec_forward.copy(this.vec_forward);
@@ -369,18 +452,82 @@
             this.container.position.add(this.move_vec_forward);
             this.container.position.add(this.move_vec_right);
             this.container.position.add(this.move_vec_up);
+            
+            this.position.x = this.container.position.x;
+            this.position.y = this.container.position.y;
+            this.position.z = this.container.position.z;
+            
           }
           
           teleport(x,y,z,ry){
             //絶対座標と向き指定での移動
             this.container.position.set(x,y,z);
             this.container.rotation.y=ry;
+            this.wish_pos.x = x;
+            this.wish_pos.y = y;
+            this.wish_pos.z = z;
+            this.wish_pos.ry = ry;
+            this.position.x = this.container.position.x;
+            this.position.y = this.container.position.y;
+            this.position.z = this.container.position.z;
+            this.position.ry = this.container.rotation.y;
+
           }
           
           getPosition(){
             return this.container.position;
           }
+        }
+        
+        
+        //アバターの入力状態による速度計算
+        //これはローカルプレイヤー用
+        //リモートの場合は受信した速度情報を採用する
+        //物理演算等で拡張の余地があるので外部関数に切り出す
+        const avatar_velocity = new THREE.Vector3();
+        const avatar_velocity_forward = new THREE.Vector3();
+        const avatar_velocity_right = new THREE.Vector3();
+        const avatar_velocity_up = new THREE.Vector3();
+        const procVelocity = (avatar) =>{
+          const move_speed = 3;
+          avatar.calcDirection();
+          //前後入力分
+          avatar_velocity_forward.copy(avatar.vec_forward);
+          avatar_velocity_forward.multiplyScalar(avatar.input.forward*move_speed);
+          //左右入力分
+          avatar_velocity_right.copy(avatar.vec_right);
+          avatar_velocity_right.multiplyScalar(avatar.input.right*move_speed);
+
+          //上下はここでは更新せず元の値を維持する
+          avatar_velocity_up.set(0,avatar.velocity.y,0);
           
+          //速度合成
+          avatar_velocity.set(0,0,0);
+          avatar_velocity.add(avatar_velocity_forward);
+          avatar_velocity.add(avatar_velocity_right);
+          avatar_velocity.add(avatar_velocity_up);
+          
+          //アバターへの書き戻し
+          avatar.velocity.x = avatar_velocity.x;
+          avatar.velocity.y = avatar_velocity.y;
+          avatar.velocity.z = avatar_velocity.z;
+        }
+
+        
+        //入力状態による歩行/待機の自動切換え用関数
+        //横歩きとかジャンプとかの拡張の余地があるので外部関数に切り出す
+        const procMotion = (avatar,dt) =>{
+          //移動入力を見て現在のモーションと違う場合は更新する。
+          const is_move = (avatar.input.forward != 0 ) || (avatar.input.right != 0 ) || (avatar.input.rotate != 0);
+          if(is_move && avatar.current_motion!="walk"){
+            //移動中かつ現在のモーションが歩行でない
+            avatar.playMotion("walk");
+          }else if(!is_move  && avatar.current_motion=="walk"){
+            //移動中でないかつ現在のモーションが歩行
+            avatar.playMotion("idle");
+          }else{
+            //いずれでもない場合は現在のモーションを維持する。
+          }
         }
 
         //キーボード・マウス操作を移動とカメラに反映するクラス
@@ -389,7 +536,7 @@
         //ゲームパッド等別の入力手段を使いたい場合は新規にクラスを定義してそっちを使う
         //ランタイムで複数の入力を切り替えたい場合はenabledを設定して切り替える。
         //システム操作的なものはこっちじゃなくてui側で扱う方針
-        class PlayerController_Keyboard_and_Mouse{
+        class InputSystem{
           constructor(param){
             const that = this;
             this.avatar = param.avatar;
@@ -401,14 +548,6 @@
             
             this.canvasElement = param.canvasElement;
             //アバターの移動速度
-            this.move_speed = 3;
-            if("move_speed" in param){
-              this.move_speed = param.move_speed;
-            }
-            this.rotate_speed = 1;
-            if("rotate_speed" in param){
-              this.rotate_speed = param.rotate_speed;
-            }
             this.ticks = param.ticks;
             
             //追加のキー操作の登録
@@ -478,6 +617,7 @@
 
               that.mouseEventContent.releasePointerCapture(event.pointerId);
               that.input_rotate = 0;
+              that.avatar.setInputRotate(0);
               that.camera_updown = 0;
               that.pointer_button_state=false;
             });
@@ -492,47 +632,78 @@
 
               //移動入力値更新
               const code = e.code;
+              let is_change_move = false;
+              let is_change_rotate = false;
+
               if(code=="KeyW"){
                 that.input_forward=1;
+                is_change_move = true;
               }else if(code=="KeyS"){
                 that.input_forward=-1;
+                is_change_move = true;
               }else if(code=="KeyA"){
                 that.input_right = -1;
+                is_change_move = true;
               }else if(code=="KeyD"){
                 that.input_right = 1;
+                is_change_move = true;
               }else if(code=="KeyQ"){
                 that.input_rotate=1;
+                is_change_rotate = true;
               }else if(code=="KeyE"){
                 that.input_rotate=-1;
+                is_change_rotate = true;
               }else if(code=="KeyC"){
                 that.use_freecamera = ! that.use_freecamera;
                 that.controls.enabled = that.use_freecamera;
               }else if(code in that.key_events){
                 that.key_events[code](e);
               }
+              if(is_change_move){
+                that.avatar.setInput(that.input_forward,that.input_right);
+              }
+              if(is_change_rotate){
+                that.avatar.setInputRotate(that.input_rotate);
+              }
+              
             });
             window.addEventListener("keyup",(e)=>{
 
               if(!that.enabled){
                 return;
               }
-
+              let is_change_move = false;
+              let is_change_rotate = false;
 
               //移動入力値更新
               const code = e.code;
               if(code=="KeyW"){
                 that.input_forward=0;
+                is_change_move = true;
               }else if(code=="KeyS"){
                 that.input_forward=0;
+                is_change_move = true;
               }else if(code=="KeyA"){
                 that.input_right = 0;
+                is_change_move = true;
               }else if(code=="KeyD"){
                 that.input_right = 0;
+                is_change_move = true;
               }else if(code=="KeyQ"){
                 that.input_rotate=0;
+                is_change_rotate = true;
               }else if(code=="KeyE"){
                 that.input_rotate=0;
+                is_change_rotate = true;
               }
+
+              if(is_change_move){
+                that.avatar.setInput(that.input_forward,that.input_right);
+              }
+              if(is_change_rotate){
+                that.avatar.setInputRotate(that.input_rotate);
+              }
+
             });
             
             //tick処理の登録
@@ -541,38 +712,11 @@
               if(!that.enabled){
                 return;
               }
-
+              
               that.tick_drag(dt);
-              that.tick_move(dt);
               that.tick_camera(dt);
             };
             
-          }
-          tick_move(dt){
-            //移動量計算
-            //前後入力分
-            const forward = this.input_forward * this.move_speed*dt;
-            //左右入力分
-            const right = this.input_right* this.move_speed*dt;
-            //今回は上下はなし
-            const up = 0;
-            //位置更新
-            this.avatar.move(forward,right,up);
-            //向き更新
-            this.avatar.rotate(2*Math.PI *this.input_rotate * this.rotate_speed * dt); 
-
-            //モーション変更
-            //移動入力を見て現在のモーションと違う場合は更新する。
-            const is_move = (this.input_forward != 0 ) || (this.input_right != 0 ) || (this.input_rotate != 0);
-            if(is_move && this.avatar.current_motion!="walk"){
-              //移動中かつ現在のモーションが歩行でない
-              this.avatar.playMotion("walk");
-            }else if(!is_move  && this.avatar.current_motion=="walk"){
-              //移動中でないかつ現在のモーションが歩行
-              this.avatar.playMotion("idle");
-            }else{
-              //いずれでもない場合は現在のモーションを維持する。
-            }
           }
           tick_camera(dt){
             if(this.use_freecamera){
@@ -607,20 +751,19 @@
 
               const threshold_x = 10;//水平閾値 低いと感度大
               const threshold_y = 10;//垂直閾値 低いと感度大
-              const rate_x = -0.1;//水平係数 大きいと感度大
+              const rate_x = -0.15;//水平係数 大きいと感度大
               const rate_y = 1.0;//垂直係数 大きいと感度大
               //上下 左右 の移動量大きいほうだけ処理
               if(p_move_y*p_move_y < p_move_x*p_move_x){
                 //水平
                 if(p_move_x*p_move_x > threshold_x){
-                  this.input_rotate = p_move_x * rate_x;
-                  this.camera_updown=0;
+                  this.avatar.setInputRotate(p_move_x * rate_x);
                 }
+                this.camera_updown=0;
               }else{
                 //垂直
                 if(p_move_y*p_move_y > threshold_y){
                   this.camera_updown = p_move_y * rate_y ;
-                  this.input_rotate=0;
                 }
               }
               this.camera_updown_amount+=this.camera_updown/50;//そのままだと早すぎる
@@ -666,6 +809,8 @@
           motions:MOTIONS,
           scene:scene,
           ticks:dic_ticks,
+          procVelocity:procVelocity,
+          procMotion:procMotion,
           onclick:playExtraMotion,
         });
         //初期アバター設定
@@ -673,7 +818,7 @@
         //初期モーション設定
         player_avatar.playMotion("idle");
         //操作系の生成
-        const player_controller = new PlayerController_Keyboard_and_Mouse({
+        const input_system = new InputSystem({
           avatar:player_avatar,
           camera:camera,
           canvasElement:canvasElement,
