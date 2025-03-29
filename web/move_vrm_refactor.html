@@ -214,7 +214,7 @@
           //速度設定
           setVelocity(vx,vy,vz){
             this.velocity.x = vx;
-            this.velocity.y = vz;
+            this.velocity.y = vy;
             this.velocity.z = vz;
           }
           
@@ -685,12 +685,12 @@
                 return;
               }
               
-              that.tick_drag(dt);
-              that.tick_camera(dt);
+              that.tickDrag(dt);
+              that.tickCamera(dt);
             };
             
           }
-          tick_camera(dt){
+          tickCamera(dt){
             if(this.use_freecamera){
               //自撮りモードの場合は追尾カメラ処理しない
               return;
@@ -707,7 +707,7 @@
             this.look_at_pos.y += 1;
             this.camera.lookAt(this.look_at_pos);
           }
-          tick_drag(dt){
+          tickDrag(dt){
             if(this.use_freecamera){
               //自撮りモードの場合はドラッグによるカメラ処理しない
               this.pointer_move_horizontal = 0;
