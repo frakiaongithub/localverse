@@ -155,16 +155,14 @@
               that.tick(dt);
             }
             
-            if(!param.procVelocity){
-              console.error("procVelocityが指定されてません");
-            }
+            //procVelocityはローカルアバター以外は使わない
             this.procVelocity = param.procVelocity?param.procVelocity:()=>{};
             if(!param.procMotion){
               console.error("procMotionが指定されてません");
             }
             this.procMotion = param.procMotion?param.procMotion:()=>{};
 
-            //
+            
             this.procMove = param.procMove?param.procMove:this.defaultProcMove;
 
 
@@ -228,6 +226,8 @@
             this.input.right = right;
             this.input.rotate = rotate;
             this.setVelocity(vx,vy,vz);
+            this.last_input_time = Date.now();
+
           }
 
           removeNamePlate(){
@@ -300,7 +300,7 @@
           dispose(){
             //退室などでいなくなる場合の対応
             //リモートプレイヤー用
-            this.disposeVrm();
+            this.disposeAvatar();
             this.removeNamePlate();
             //アニメーション関数を解除
             if( this.tick_name in this.ticks){
@@ -308,15 +308,15 @@
             }
           }
           
-          async setVrm(src){
+          async setAvatar(src){
             //設定中の呼び出し禁止
             if(this.in_set_vrm){
-              console.log("in_set_vrm then ignore new setVrm ");
+              console.log("in_set_vrm then ignore new setAvatar ");
               return;
             }
             this.in_set_vrm= true;
             if(this.vrm){
-              this.disposeVrm();
+              this.disposeAvatar();
             }
             //最終的に受信データで更新するのでバイナリ対応
             if(typeof(src)=="object"){
@@ -353,7 +353,7 @@
             }
             this.in_set_vrm= false;
           }
-          disposeVrm(){
+          disposeAvatar(){
             //現在のVRMを破棄する。
             if(this.vrm){
               VRMUtils.deepDispose(this.vrm.scene);
@@ -383,7 +383,6 @@
           }
 
           playMotion(name){
-            
             if(name in this.actions){
               const prev_animation = this.current_motion
               const action = this.actions[name];
@@ -412,10 +411,6 @@
             }
           }
           
-          rotate(rot){
-            this.container.rotation.y += rot;
-            this.position.ry = this.container.rotation.y;
-          }
           
           defaultProcMove(avatar,dt){
             //速度による移動解決
@@ -435,29 +430,6 @@
 
           }
           
-          move(forward,right,up){
-            //現在の向きに対する変位量指定での移動
-            //入力値は変位量\
-            this.calcDirection();
-            //前後入力分
-            this.move_vec_forward.copy(this.vec_forward);
-            this.move_vec_forward.multiplyScalar(forward);
-            //左右入力分
-            this.move_vec_right.copy(this.vec_right);
-            this.move_vec_right.multiplyScalar(right);
-            //上下入力分
-            this.move_vec_up.copy(this.vec_up);
-            this.move_vec_up.multiplyScalar(up);
-            //位置更新
-            this.container.position.add(this.move_vec_forward);
-            this.container.position.add(this.move_vec_right);
-            this.container.position.add(this.move_vec_up);
-            
-            this.position.x = this.container.position.x;
-            this.position.y = this.container.position.y;
-            this.position.z = this.container.position.z;
-            
-          }
           
           teleport(x,y,z,ry){
             //絶対座標と向き指定での移動
@@ -814,7 +786,7 @@
           onclick:playExtraMotion,
         });
         //初期アバター設定
-        await player_avatar.setVrm(default_avatar_url);
+        await player_avatar.setAvatar(default_avatar_url);
         //初期モーション設定
         player_avatar.playMotion("idle");
         //操作系の生成
@@ -856,7 +828,7 @@
             }
           } else if(fileType === 'vrm') {
             player_avatar.say("アバターチェンジ! "+file.name);
-            await player_avatar.setVrm(buffer);
+            await player_avatar.setAvatar(buffer);
           }
 
         } );
