@@ -660,45 +660,59 @@
           requestAnimationFrame(animation_loop);
         };
         
-        //送信用に x y を ArrayBuffer(8)に変換する
-        const packTransform = (x,y)=> {
-          const buffer =new ArrayBuffer(4+4);
+        //送信用データをエンコード
+        const packTransform = (x,y,up,right,vx,vy)=> {
+          const buffer =new ArrayBuffer(4+4+4+4+4+4);
           const view =  new DataView(buffer);
           view.setFloat32(0,x);
           view.setFloat32(4,y);
+          view.setFloat32(8,up);
+          view.setFloat32(12,right);
+          view.setFloat32(16,vx);
+          view.setFloat32(20,vy);
+
           return buffer;
         };
         
-        //受信したArrayBufferを x y に変換する
+        //受信データをデコード
         const unpackTransform = (buffer) =>{
           var view = new DataView(buffer);
           return {
             x:view.getFloat32(0),
             y:view.getFloat32(4),
+            up:view.getFloat32(8),
+            right:view.getFloat32(12),
+            vx:view.getFloat32(16),
+            vy:view.getFloat32(20),
           };
         }
+
         
 
         var avatars = {};//接続idとアバターの辞書。値は後で定義するBoxAvatarクラス
         
         //位置同期は全員に
-        const sendTransform = (x,y) =>{
-          const data = packTransform(x,y);
+        const sendTransform = (x,y,up,right,vx,vy) =>{
+          const data = packTransform(x,y,up,right,vx,vy);
           for(const id in connections){
             const conn = connections[id];
             conn.send("transform",data);
           }
         }
-        var local_player = null;
+
+        var local_avatar = null;
         const createLocalPlayer = (id,name) =>{
-          const avatar = new BoxAvatar({
+          const avatar = new Avatar({
             id:id,
             name:name,
-            container:box_space
+            container:box_space,
+            ticks:dic_ticks,
+            procVelocity:procVelocity,
           });
+          local_avatar = avatar;
           avatars[id]=avatar;
           avatar.setup();
-          local_player = new LocalPlayer({
+          const input_system = new InputSystem({
             avatar:avatar,
             sendTransform:sendTransform,
             ticks:dic_ticks,
@@ -709,14 +723,16 @@
 
         
         const createOther = (id,name) =>{
-            const avatar = new BoxAvatar({
+            const avatar = new Avatar({
               id:id,
               name:name,
-              container:box_space
+              container:box_space,
+              ticks:dic_ticks
             });
             avatars[id]=avatar;
             avatar.setup();
         }
+
 
         const removeOther = (id) =>{
           if(id in avatars){
@@ -728,9 +744,10 @@
         const moveOther = (id,data) =>{
           if(id in avatars){
             const pos = unpackTransform(data);
-            avatars[id].moveTo(pos.x,pos.y);
+            avatars[id].setRemoteInput(pos.x,pos.y,pos.up,pos.right,pos.vx,pos.vy);
           }
         }
+
         
         const sayOther = (id,message) =>{
           if(id in avatars){
@@ -741,11 +758,14 @@
 
         //domの箱を暫定的にアバターとして表示するためのクラス
         //接続確立時に生成する
-        class BoxAvatar{
+        class Avatar{
           constructor(param){
+            const that=this;
             this.id = param.id;
             this.name = param.name;
             this.container = param.container;
+            this.ticks =param.ticks;
+
             //出現位置
             if(param.spawn){
               this.spawn = param.spawn;
@@ -755,6 +775,40 @@
             this.avatar = null;//アバター用dom
             this.name_label = null;//名札用dom
             this.chat_label = null;//チャット表示用dom
+
+            //procVelocityはローカルプレイヤー用
+            this.procVelocity = param.procVelocity?param.procVelocity:()=>{};
+            this.input = {up:0,right:0};
+            this.velocity = {x:0,y:0};
+            this.position = {x:this.spawn.x,y:this.spawn.y};
+            this.last_input_time = Date.now();
+            this.tick_name = "avatar_tick_"+this.id;
+            this.ticks[this.tick_name] = (dt) =>{
+              that.tick(dt);
+            }
+
+
+          }
+
+
+          setInput(up,right){
+            this.input.up = up;
+            this.input.right = right;
+            this.last_input_time = Date.now();
+            this.procVelocity(this);
+          }
+          
+          setVelocity(vx,vy){
+            this.velocity.x = vx;
+            this.velocity.y = vy;
+          }
+          
+          setRemoteInput(x,y,up,right,vx,vy){
+            this.teleport(x,y);
+            this.input.up = up;
+            this.input.right = right;
+            this.setVelocity(vx,vy);
+            this.last_input_time = Date.now();
           }
 
 
@@ -811,32 +865,55 @@
             },1000);
           }
           
+          
+          
           //移動 こっちでは補完処理等はしない
-          moveTo(x,y){
+          teleport(x,y){
             if(this.avatar){
-              this.avatar.style.left =x;
+              this.avatar.style.left = x;
               this.avatar.style.top  = y;
             }
+            this.position.x = x;
+            this.position.y = y;
           }
+          
+          
+          tick(dt){
+            //velocityに基づく移動
+            const ax = this.position.x + this.velocity.x * dt;
+            const ay = this.position.y + this.velocity.y * dt;
+            this.teleport(ax,ay);
+          }
+
           
         }
         
+
+        //入力情報に基づく速度決定
+        const procVelocity = (avatar) =>{
+          const speed = 32;
+          avatar.velocity.x = avatar.input.right*speed;
+          avatar.velocity.y = avatar.input.up*speed*-1;//スクリーン座標なので反転
+        }
+
         
         //ローカルプレイヤーの入力と更新処理
-        class LocalPlayer{
+        class InputSystem{
           constructor(param){
             const that = this;
             this.avatar = param.avatar;
             this.sendTransform = param.sendTransform;
             this.ticks = param.ticks;
             this.position = this.avatar.spawn;
-            this.input_x = 0;
-            this.input_y = 0;
+            this.input_up = 0;
+            this.input_right = 0;
             this.speed = 32;
             this.ticks["local_player"] = (dt) =>{
               that.tick(dt);
             };
             this.last_transform_send = 0;
+            this.input_count = 0;
+            this.last_send_input_count = 0;
 
 
             window.addEventListener("keydown",(e)=>{
@@ -848,18 +925,28 @@
                   return;
                 }
               }
-
+              
+              var move_changed = false;
               //移動入力値更新
               const code = e.code;
               if(code=="KeyW"){
-                that.input_y=-1;
+                that.input_up=1;
+                move_changed = true;
               }else if(code=="KeyS"){
-                that.input_y=1;
+                that.input_up=-1;
+                move_changed = true;
               }else if(code=="KeyA"){
-                that.input_x = -1;
+                that.input_right = -1;
+                move_changed = true;
               }else if(code=="KeyD"){
-                that.input_x = 1;
+                that.input_right = 1;
+                move_changed = true;
               }
+              if(move_changed){
+                that.input_count++;
+                that.avatar.setInput(this.input_up,this.input_right);
+              }
+              
             });
             window.addEventListener("keyup",(e)=>{
 
@@ -871,40 +958,49 @@
                   return;
                 }
               }
+              var move_changed = false;
               //移動入力値更新
               const code = e.code;
               if(code=="KeyW"){
-                that.input_y=0;
+                that.input_up=0;
+                move_changed=true;
               }else if(code=="KeyS"){
-                that.input_y=0;
+                that.input_up=0;
+                move_changed=true;
               }else if(code=="KeyA"){
-                that.input_x = 0;
+                that.input_right = 0;
+                move_changed=true;
               }else if(code=="KeyD"){
-                that.input_x = 0;
+                that.input_right = 0;
+                move_changed=true;
+              }
+              if(move_changed){
+                that.input_count++;
+                that.avatar.setInput(this.input_up,this.input_right);
               }
             });
           }
           tick(dt){
-            //移動入力*変位
-            var ox = this.position.x;
-            var oy = this.position.y;
-            var ax = ox + this.input_x * dt * this.speed; 
-            var ay = oy + this.input_y * dt * this.speed; 
-            //入力なしでも一定時間で送信しないと新参に届かない
-            const need_send = this.last_transform_send < Date.now() -1000;
-
-            if(this.input_x != 0 || this.input_y != 0 || need_send){
-              this.position.x = ax;
-              this.position.y = ay;
-              sendTransform(ax,ay);
+            //送信の必要性の判定
+            //入力状態が変更された場合
+            //あるいは1秒以上経過 >> 入力なしでも一定時間で送信しないと新参に届かない
+            if((this.input_count > this.last_send_input_count) || (Date.now() -1000 > this.last_transform_send) ){
+              //送信が必要
+              const x=this.avatar.position.x;
+              const y=this.avatar.position.y;
+              const up = this.avatar.input.up;
+              const right = this.avatar.input.right;
+              const vx=this.avatar.velocity.x;
+              const vy=this.avatar.velocity.y;
+              this.sendTransform(x,y,up,right,vx,vy);
               this.last_transform_send = Date.now();
-              this.avatar.moveTo(ax,ay);
+              this.last_send_input_count = this.input_count;
+            }
 
-            };
-            //console.log(ax,ay);
           }
 
         }
+
         
         //ログ表示
         const appendLog  = (msg) => {
@@ -1013,7 +1109,7 @@
               const target_name = id2name[target]; 
               
               //アバターからの発言表示
-              local_player.avatar.say(message_body);
+              local_avatar.say(message_body);
               
               if(target){
                 const tell_msg = {"mode":"tell","target":target,"message":message_body};
