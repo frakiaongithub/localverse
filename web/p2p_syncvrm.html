@@ -14,12 +14,18 @@
 
   <body>
     <canvas id="myCanvas" style="position:absolute;left:0px;top:0px;"></canvas>
-    <div  id="ui_chat" style="position:absolute;width:95vw;height:95vh;pointer-events:none">
-      <div style="width:95vw;height:calc(95vh - 30px);bottom:30px;right:0px;overflow-y: scroll;">
+    <div  id="ui_chat" style="top:0px;position:absolute;width:95vw;height:95vh;pointer-events:none">
+      <div style="position:absolute;width:95vw;height:calc(95vh - 60px);top:auto;bottom:30px;right:0px;overflow-y: scroll;">
         <ul id="log_list" style="color:white">
         </ul>
       </div>
-      <div  style="left:0px;bottom:0px;width:95vw;height:30px;;pointer-events:auto">
+
+      <div id="ui_emote"  style="position:absolute;left:0px;top:auto;bottom:30px;width:95vw;height:30px;;pointer-events:auto">
+        <select id="emotes" style="width:120px"></select>
+        <button type="button" id="btn_emote" style="width:70px">所作</button>
+      </div>
+
+      <div  style="position:absolute;left:0px;top:auto;bottom:0px;width:95vw;height:30px;;pointer-events:auto">
         <button type="button" id="btn_move_room" style="width:70px">部屋移動</button>
         <select id="members" style="width:120px"></select>
         <input type="text" id="message" style="width:calc(90vw - 190px);">
@@ -396,14 +402,22 @@
               return false;
             }
           }
+          
+          hasMotion(name){
+            return name in this.actions;
+          }
 
-          playMotion(name){
+          playMotion(name,force_play = false){
             if(name in this.actions){
               const prev_animation = this.current_motion
+              if(prev_animation == name && force_play==false){
+                //基本的に現在と同じモーション名の場合は無視
+                return;
+              }
               const action = this.actions[name];
               this.current_motion = name;
               action.play();
-              if( prev_animation in this.actions){
+              if( (prev_animation in this.actions) && (prev_animation != name) ){
                 const prev_action = this.actions[prev_animation];
                 prev_action.stop();
               }
@@ -621,6 +635,15 @@
                 return;
               }
 
+              //ui操作で移動してほしくないので
+              //フォーカスを持っている要素のtagNameがinput selectのいずれかの場合は無視
+              if(document.activeElement){
+                const tag = document.activeElement.tagName;
+                if(tag=="SELECT" || tag=="INPUT"){
+                  return;
+                }
+              }
+
 
               //移動入力値更新
               const code = e.code;
@@ -667,6 +690,18 @@
               if(!that.enabled){
                 return;
               }
+
+
+              //ui操作で移動してほしくないので
+              //フォーカスを持っている要素のtagNameがinput selectのいずれかの場合は無視
+              if(document.activeElement){
+                const tag = document.activeElement.tagName;
+                if(tag=="SELECT" || tag=="INPUT"){
+                  return;
+                }
+              }
+
+
               let is_change_move = false;
               let is_change_rotate = false;
 
@@ -896,10 +931,10 @@
                 const info = JSON.parse(data);
                 if(info.mode=="req_motion"){
                   //エモート用のデータ要求が来た
-                  if(player_avatar.hasMotion(info.motion)){
+                  if(local_avatar.hasMotion(info.motion)){
                     //持ってないものは知らん
-                    const data = player_avatar.motions[info.motion];
-                    prepareSendFile(self_id,id,info.motion,data,mode="motion")
+                    const data = local_avatar.motions[info.motion];
+                    prepareSendFile(self_id,id,info.motion,data,"motion")
                   }
                   
                 }else if(info.mode=="emote"){
@@ -915,6 +950,7 @@
                   }
                 }
               }catch(e){
+                console.error("rpc",e);
               }
             },
           },
@@ -923,6 +959,58 @@
 
 
         };
+        
+        
+        const restoreEmote = async () =>{
+          //indexedDBに登録されているfbxを全部取得してregistする
+          if(self_id in avatars){
+            const emotes = await db.getAllData("fbx");
+            for(const emote of emotes){
+              //emoteには {id:db上のキー ,data:実際に格納している値}
+              //が入っているので実際のデータはemote.data
+              const data = emote.data.data;
+              const filename = emote.data.filename;
+              await avatars[self_id].registMotion(data,filename,true);
+            }
+            setupEmote();
+          }
+          
+        }
+        
+        const setupEmote=  () =>{
+          if(local_avatar){
+            const org_num = sel_emotes.length;
+            const org_index = sel_emotes.selectedIndex;
+            while(sel_emotes.length>0){
+              sel_emotes.remove(0);
+            };
+            for(const key in local_avatar.motions){
+              if(key=="idle" || key=="walk"){
+                //歩行と待機は無視
+                continue;
+              }
+              const opt = document.createElement("option");
+              opt.value = key;
+              opt.text = key;
+              sel_emotes.add(opt);              
+            }
+            if(org_index>=0){
+              sel_emotes.options[org_index].selected;
+            }
+            return sel_emotes.length>0;
+          }else{
+            return false;
+          }
+        }
+        const doEmote = async (name) =>{
+          local_avatar.playMotion(name);
+          for(const id in connections){
+            const conn = connections[id];
+            const msg = {"mode":"emote","motion":name};
+            conn.send("rpc",JSON.stringify(msg));
+          }
+        };
+        
         /* P2P接続の通信内容を定義する辞書 
            上の例はチャット用の設定
            チャネル名をキーとして次の値を持つ
@@ -951,6 +1039,16 @@
         const log_list = document.getElementById("log_list");
         const sel_members = document.getElementById("members");
         const btn_move_room = document.getElementById("btn_move_room");
+        
+        const ui_emote = document.getElementById("ui_emote");
+        const btn_emote = document.getElementById("btn_emote");
+        const sel_emotes = document.getElementById("emotes");
+        ui_emote.style.display="none";
+        btn_emote.onclick = () =>{
+          if(sel_emotes.selectedIndex>=0){
+            doEmote(sel_emotes.options[sel_emotes.selectedIndex].value);
+          }
+        }
         
         //アバター(箱)のコンテナ要素
         const box_space = document.getElementById("box_space");
@@ -1067,6 +1165,9 @@
             btn_login.addEventListener("click", okEvent);
           });
         };
+
+
+
         
         const moveRoom = async () =>{
           const new_room = await promptAsync("部屋名を入力してください");
@@ -1143,14 +1244,19 @@
           removeDatabase(){
             //何故か開発ツールでdbごと消す機能がないので実装
             //アンインストール的なことをする場合に呼ぶ想定
-            this.closeDatabase();//openしている場合閉じないと削除できない。
-            const req= window.indexedDB.deleteDatabase(this.db_name);
-            req.onsuccess = (event) => {
-              console.log("データベース["+this.db_name+"]が正常に削除されました。");
-            };
-            req.onerror  = (e) =>{
-              console.log("データベース["+this.db_name+"]の削除に失敗しました。");
-            };
+            const that = this;
+            return new Promise((resolve,reject) => {
+              that.closeDatabase();//openしている場合閉じないと削除できない。
+              const req= window.indexedDB.deleteDatabase(that.db_name);
+              req.onsuccess = (event) => {
+                resolve(true);
+                console.log("データベース["+that.db_name+"]が正常に削除されました。");
+              };
+              req.onerror  = (e) =>{
+                reject(false);
+                console.log("データベース["+that.db_name+"]の削除に失敗しました。");
+              };
+            });
           }
           
           getStore(storename){
@@ -1160,6 +1266,29 @@
               const transaction =  this.db.transaction([storename], 'readwrite');
               return transaction.objectStore(storename);
             }
+          }
+
+          getAllData(storename){
+            const that = this;
+            const store = this.getStore(storename);
+            return new Promise((resolve,reject) => {
+              try{
+                const request = store.getAll();
+                request.onsuccess = (event) => {
+                  if (event.target) {
+                    const result = event.target.result;
+                    if(result){
+                      resolve(result);
+                    }else{
+                      resolve(null);
+                    }
+                  }
+                };
+              }catch(e){
+                console.log(e);
+                reject(null);
+              }
+            });
           }
           
           getData(storename,key){
@@ -1203,7 +1332,6 @@
         }
         
         const db = new DB("p2p_syncvrm",["vrm","fbx"]);
-        await db.openDatabase();
 
 
         
@@ -1657,7 +1785,15 @@
             ticks:dic_ticks,
             procVelocity:procVelocity,
             procMotion:procMotion,
-            onclick:()=>{},
+            onclick:()=>{
+              if(ui_emote.style.display=="none"){
+                if(setupEmote()){
+                  ui_emote.style.display="";
+                }
+              }else{
+                ui_emote.style.display="none";
+              }
+            },
           });
           local_avatar = avatar;
           avatars[id]=avatar;
@@ -1768,6 +1904,7 @@
           if(self_id in avatars){
             await avatars[self_id].registMotion(data,filename,true);
             await avatars[self_id].playMotion(filename);
+            setupEmote();
           }
           local_avatar_data = data;
           local_avatar_name = filename;
@@ -1827,6 +1964,8 @@
             //tokenによる認証を試みる
             await doAuth(token);
           }else{
+            //ローカルDBを削除してアバターとモーション削除
+            await db.removeDatabase();
             //idとパスワードによる認証を試みる
             let ret = false;
             while(!ret){
@@ -1836,6 +1975,11 @@
         }
         
         const onNeedLogin = async () =>{
+          //他の人のアバターが初期にになるのを防ぎたいので
+          //ログインが必要になった時点でDB上のアバターとモーションは削除
+          //データ保護の観点でいうとローカルDBに保存している時点で効果はない。
+          //DB保存は、クライアントの状態がおかしくなったときのリロードや部屋移動の時に維持するのが目的
+          await db.removeDatabase();
           let ret = false;
           while(!ret){
             ret = await doLogin();
@@ -1845,6 +1989,11 @@
         //シグナリングサーバからのログイン成功通知
         //このサンプルでは新規参加側がofferする
         const onWelcome = async (info)=>{
+          
+          //ログインするまではアバター情報へのアクセスは発生しない。
+          await db.openDatabase();
+
+        
 
           //トークン保存
           const token = info.token;
@@ -1858,6 +2007,9 @@
           //アバター復元
           await restoreLocalAvatar();
           //この時点では接続確立していないのでまだ送信できない
+          
+          //モーション復元
+          await restoreEmote();
           
 
           //部屋移動したのでメンバーリスト再構成
