@@ -161,7 +161,8 @@
             this.in_set_vrm = false;//アバター設定中かどうか
             this.current_motion = "";
             this.tick_name = "avatar_tick_"+this.id;
-            this.avatar_data = "";
+            this.avatar_data = null;
+            this.reserved_avatar_data = null;//setAvatar中にsetAvatarされた場合はここに保存して後で解決する
             this.actions = {};
             this.mixer = null;
             this.container = new THREE.Object3D(this.name);
@@ -330,8 +331,11 @@
           }
           
           async setAvatar(src){
-            //設定中の呼び出し禁止
+            //設定中に呼ばれた場合、データを保存しておいて
+            //処理後にsetAvatarを改めて呼ぶ
             if(this.in_set_vrm){
+              this.reserved_avatar_data = src;
+              //処理中に複数回呼ばれた場合は最後の設定だけ残す
               console.log("in_set_vrm then ignore new setAvatar ");
               return;
             }
@@ -373,6 +377,14 @@
               this.playMotion(prev_motion);
             }
             this.in_set_vrm= false;
+            
+            //setAvatar中にsetAvatar呼ばれた場合の解決
+            if(this.reserved_avatar_data){
+              const avatar_data = this.reserved_avatar_data;
+              this.reserved_avatar_data = null;
+              //reserved_avatar_dataを消しているので無限ループにはならない
+              await this.setAvatar();
+            }
           }
           disposeAvatar(){
             //現在のVRMを破棄する。
@@ -1514,7 +1526,7 @@
           event.preventDefault();
         } );
         //ファイルドロップ処理
-        window.addEventListener( 'drop', async ( event )=>{
+        const onDropFile = async ( event )=>{
 
           event.preventDefault();
 
@@ -1560,9 +1572,8 @@
               prepareSendFile(sender,target,filename,buffer,mode);
             }
           }
-
-
-        });
+        };
+        window.addEventListener( 'drop', onDropFile);
 
         /* 
         シグナリング処理は接続毎に必要なのでクラスにまとめている。
