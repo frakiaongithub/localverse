@@ -87,14 +87,30 @@
         const scene = new THREE.Scene();
 
 
-        // 環境光源を作成
-        const light = new THREE.AmbientLight(0xFFFFFF, 1.0);
-        scene.add(light);
+        
+        //ワールド初期設定
+        //ワールド内に静的なものを追加したい場合はここで記述する
+        const setupWorld = (scene) =>{
+          // 環境光源を作成
+          const light = new THREE.AmbientLight(0xFFFFFF, 1.0);
+          scene.add(light);
 
+          //zx平面にグリッド表示 サイズ10 分割10
+          var gridHelper = new THREE.GridHelper(10, 10);
+          scene.add(gridHelper);
           
-        //zx平面にグリッド表示 サイズ10 分割10
-        var gridHelper = new THREE.GridHelper(10, 10);
-        scene.add(gridHelper);
+          //追加でものを置きたい場合はここに記述
+          /*  箱を置く例 
+          const geometry = new THREE.BoxGeometry(1, 1, 1);//形状
+          const material = new THREE.MeshNormalMaterial();//表示材質
+          const box = new THREE.Mesh(geometry, material);//面の生成
+          box.position.set(0,0.5,3);//位置
+          box.rotation.set(0,Math.PI/4,0);//向き
+          scene.add(box);
+          */
+        };
+        
+        setupWorld(scene);
 
         // カメラを作成
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
