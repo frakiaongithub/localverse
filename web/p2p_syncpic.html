@@ -574,7 +574,7 @@
           event.preventDefault();
         } );
         //ファイルドロップ処理
-        window.addEventListener( 'drop', async ( event )=>{
+        const onDropFile = async ( event )=>{
 
           event.preventDefault();
 
@@ -611,7 +611,8 @@
               prepareSendFile(sender,target,filename,buffer,mode);
             }
           }
-        });
+        };
+        window.addEventListener( 'drop', onDropFile);
 
         /* 
         シグナリング処理は接続毎に必要なのでクラスにまとめている。

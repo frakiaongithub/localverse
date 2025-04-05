@@ -28,66 +28,89 @@
         //描画dom要素を指定
         const canvasElement = document.querySelector('#myCanvas')
         
-        // レンダラーを作成
-        const renderer = new THREE.WebGLRenderer({
-          canvas: canvasElement,
-        });
-        renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.setSize(window.innerWidth, window.innerHeight);
 
-        //名札等表示用のレンダラー
-        const labelRenderer = new CSS3DRenderer();
-        labelRenderer.setSize(window.innerWidth, window.innerHeight);
-        labelRenderer.domElement.style.position = "absolute";
-        labelRenderer.domElement.style.left = "0px";
-        labelRenderer.domElement.style.top = "0px";
-        labelRenderer.domElement.style.width = "100vw";
-        labelRenderer.domElement.style.height = "100vh";
-        labelRenderer.domElement.style.pointerEvents = "none";
-        document.body.appendChild(labelRenderer.domElement);
-
-        //オブジェクト毎に更新処理はありうるのでそれを積む辞書
-        const dic_ticks = {};
-        //インスタンス破棄等で不要になったら辞書から削除する
-        //更新関数の引数は前のフレームからの経過時間
-        const clock = new THREE.Clock()
-        // 毎フレーム実行される関数
-        const animation_loop = () =>{
-          const dt = clock.getDelta();//前のフレームからの経過時間
-          //登録済みの更新関数を実行する
-          for(const key in dic_ticks){
-            dic_ticks[key](dt);
-          }
-          renderer.render(scene, camera); // 3Dレンダリング
-          labelRenderer.render(scene, camera);// 名札等レンダリング
-          requestAnimationFrame(animation_loop);
-        };
-
-
-        // シーンを作成
-        const scene = new THREE.Scene();
-
-
-        // 環境光源を作成
-        const light = new THREE.AmbientLight(0xFFFFFF, 1.0);
-        scene.add(light);
-
-          
-        //zx平面にグリッド表示 サイズ10 分割10
-        var gridHelper = new THREE.GridHelper(10, 10);
-        scene.add(gridHelper);
-
-        // カメラを作成
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
-        camera.position.set(0, 2, -3);
-
-        //リサイズ対応
-        window.addEventListener("resize", (e) => {
-          camera.aspect = window.innerWidth / window.innerHeight;
-          camera.updateProjectionMatrix();
+        //3D描画関連初期化
+        const initRenderSystem = (canvasElement) =>{
+          // レンダラーを作成
+          const renderer = new THREE.WebGLRenderer({
+            canvas: canvasElement,
+          });
+          renderer.setPixelRatio(window.devicePixelRatio);
           renderer.setSize(window.innerWidth, window.innerHeight);
+          //名札等表示用のレンダラー
+          const labelRenderer = new CSS3DRenderer();
           labelRenderer.setSize(window.innerWidth, window.innerHeight);
-        });
+          labelRenderer.domElement.style.position = "absolute";
+          labelRenderer.domElement.style.left = "0px";
+          labelRenderer.domElement.style.top = "0px";
+          labelRenderer.domElement.style.width = "100vw";
+          labelRenderer.domElement.style.height = "100vh";
+          labelRenderer.domElement.style.pointerEvents = "none";
+          document.body.appendChild(labelRenderer.domElement);
+
+          //オブジェクト毎に更新処理はありうるのでそれを積む辞書
+          const dic_ticks = {};
+          //インスタンス破棄等で不要になったら辞書から削除する
+          //更新関数の引数は前のフレームからの経過時間
+          const clock = new THREE.Clock()
+          // 毎フレーム実行される関数
+          const animation_loop = () =>{
+            const dt = clock.getDelta();//前のフレームからの経過時間
+            //登録済みの更新関数を実行する
+            for(const key in dic_ticks){
+              dic_ticks[key](dt);
+            }
+            renderer.render(scene, camera); // 3Dレンダリング
+            labelRenderer.render(scene, camera);// 名札等レンダリング
+            requestAnimationFrame(animation_loop);
+          };
+          
+          // カメラを作成
+          const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
+          camera.position.set(0, 2, -3);
+
+
+          //リサイズ対応
+          window.addEventListener("resize", (e) => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+          });
+          // シーンを作成
+          const scene = new THREE.Scene();
+          return [scene,camera,animation_loop,dic_ticks];
+        };
+        //初期化関数を呼んで他の処理で使う変数を取得
+        const [scene,camera,animation_loop,dic_ticks] = initRenderSystem(canvasElement);
+        
+        
+        
+        //ワールド初期設定
+        //ワールド内に静的なものを追加したい場合はここで記述する
+        const setupWorld = (scene) =>{
+          // 環境光源を作成
+          const light = new THREE.AmbientLight(0xFFFFFF, 1.0);
+          scene.add(light);
+
+          //zx平面にグリッド表示 サイズ10 分割10
+          var gridHelper = new THREE.GridHelper(10, 10);
+          scene.add(gridHelper);
+          
+          //追加でものを置きたい場合はここに記述
+          /*  箱を置く例 
+          const geometry = new THREE.BoxGeometry(1, 1, 1);//形状
+          const material = new THREE.MeshNormalMaterial();//表示材質
+          const box = new THREE.Mesh(geometry, material);//面の生成
+          box.position.set(0,0.5,3);//位置
+          box.rotation.set(0,Math.PI/4,0);//向き
+          scene.add(box);
+          */
+        };
+        
+        setupWorld(scene);
+
+
         
         //VRMロード処理の定義
         const vrm_loader = new GLTFLoader();
@@ -621,11 +644,22 @@
                 return;
               }
 
+              //ui操作で移動してほしくないので
+              //フォーカスを持っている要素のtagNameがinput selectのいずれかの場合は無視
+              if(document.activeElement){
+                const tag = document.activeElement.tagName;
+                if(tag=="SELECT" || tag=="INPUT"){
+                  return;
+                }
+              }
+
 
               //移動入力値更新
               const code = e.code;
               let is_change_move = false;
               let is_change_rotate = false;
+
+
 
               if(code=="KeyW"){
                 that.input_forward=1;
@@ -664,6 +698,17 @@
               if(!that.enabled){
                 return;
               }
+
+              //ui操作で移動してほしくないので
+              //フォーカスを持っている要素のtagNameがinput selectのいずれかの場合は無視
+              if(document.activeElement){
+                const tag = document.activeElement.tagName;
+                if(tag=="SELECT" || tag=="INPUT"){
+                  return;
+                }
+              }
+
+
               let is_change_move = false;
               let is_change_rotate = false;
 
@@ -766,26 +811,90 @@
           }
         }
 
-        var player_avatar = null;
+        var local_avatar = null;
 
-        //モーション追加のテストのために、順番に再生する関数
-        var extra_motion_index = 0;
-        const playExtraMotion = () =>{
-          const default_motions = {"walk":1,"idle":1};
-          const list = Object.keys(player_avatar.motions).filter((name)=>{ return !(name in default_motions);});
-          console.log(player_avatar.motions,list,extra_motion_index);
-          if(list.length>0){
-            extra_motion_index = extra_motion_index % list.length;
-            const name = list[extra_motion_index];
-            console.log("play ",name);
-            player_avatar.say("モーション再生! "+name);
-
-            player_avatar.playMotion(name);
-            extra_motion_index+=1;
+        const inp_message = document.getElementById("message");
+        const ui_emote = document.getElementById("ui_emote");
+        const btn_emote = document.getElementById("btn_emote");
+        const sel_emotes = document.getElementById("emotes");
+        
+        //所作選択肢設定
+        const setupEmote=  () =>{
+          if(local_avatar){
+            const org_num = sel_emotes.length;
+            const org_index = sel_emotes.selectedIndex;
+            while(sel_emotes.length>0){
+              sel_emotes.remove(0);
+            };
+            for(const key in local_avatar.motions){
+              if(key=="idle" || key=="walk"){
+                //歩行と待機は無視
+                continue;
+              }
+              const opt = document.createElement("option");
+              opt.value = key;
+              opt.text = key;
+              sel_emotes.add(opt);              
+            }
+            if(org_index>=0){
+              sel_emotes.options[org_index].selected;
+            }
+            return sel_emotes.length>0;
+          }else{
+            return false;
           }
         }
+        
+        //所作再生 マルチにする場合はリモートへの通知が追加
+        const doEmote = async (name) =>{
+          local_avatar.playMotion(name);
+        };
+        
+        //所作uiの表示切替
+        const toggleEmote = () =>{
+          if(ui_emote.style.display=="none"){
+            if(setupEmote()){
+              ui_emote.style.display="";
+            }
+          }else{
+            ui_emote.style.display="none";
+          }
+        }
+        //初期状態は非表示
+        ui_emote.style.display="none";
 
+        btn_emote.onclick = () =>{
+          if(sel_emotes.selectedIndex>=0){
+            doEmote(sel_emotes.options[sel_emotes.selectedIndex].value);
+          }
+        }
+        
+        //チャット入力処理
+        //現時点では通信機能はないので独り言
+        inp_message.addEventListener('keydown', (e) => {
+          //keyCodeは非推奨だが日本語変換と判別する都合これしかない
+          if(!inp_message.value){
+            //メッセージなし
+            return;
+          }
+          const message_body = inp_message.value;
+          if(e.keyCode === 13) {
+            //アバターからの発言表示
+            local_avatar.say(message_body);
+            inp_message.value="";
+          }
+        });
 
+        const setLocalAvatar = async (data,filename) =>{
+          await local_avatar.setAvatar(data);
+        }
+
+        const setLocalMotion = async (data,filename) =>{
+          if(await local_avatar.registMotion(data,filename,true)){
+            await local_avatar.playMotion(filename);
+            setupEmote();
+          }
+        }
 
         
         //初期モーション定義
@@ -795,7 +904,7 @@
         ];
 
         //アバター生成
-        player_avatar = new Avatar({
+        local_avatar = new Avatar({
           id:1,
           name:"あなた",
           motions:MOTIONS,
@@ -803,19 +912,19 @@
           ticks:dic_ticks,
           procVelocity:procVelocity,
           procMotion:procMotion,
-          onclick:playExtraMotion,
+          onclick:toggleEmote,
         });
         //初期アバター設定
-        await player_avatar.setAvatar(default_avatar_url);
+        await local_avatar.setAvatar(default_avatar_url);
         //初期モーション設定
-        player_avatar.playMotion("idle");
+        local_avatar.playMotion("idle");
         //操作系の生成
         const input_system = new InputSystem({
-          avatar:player_avatar,
+          avatar:local_avatar,
           camera:camera,
           canvasElement:canvasElement,
           ticks:dic_ticks,
-          key_events:{"KeyM":(e)=>{playExtraMotion();}}
+          key_events:{"KeyM":(e)=>{toggleEmote();}}
         });
 
 
@@ -840,16 +949,9 @@
           const buffer = await file.arrayBuffer()
 
           if ( fileType === 'fbx' ) {
-            if(await player_avatar.registMotion(buffer,file.name,true)){
-              player_avatar.say("モーション追加 "+ file.name);
-              //設定されたことがわかるように即再生
-              player_avatar.playMotion(file.name);
-            }else{
-              player_avatar.say("アニメーションじゃない!!! "+ file.name);
-            }
+            await setLocalMotion(buffer,file.name);
           } else if(fileType === 'vrm') {
-            player_avatar.say("アバターチェンジ! "+file.name);
-            await player_avatar.setAvatar(buffer);
+            await setLocalAvatar(buffer,file.name);
           }
 
         }
@@ -867,5 +969,12 @@
   </head>
   <body>
     <canvas id="myCanvas" style="position:absolute;left:0px;top:0px;"></canvas>
+    <div id="ui_emote"  style="position:absolute;left:0px;top:auto;bottom:30px;width:95vw;height:30px;;pointer-events:auto">
+      <select id="emotes" style="width:120px"></select>
+      <button type="button" id="btn_emote" style="width:70px">所作</button>
+    </div>
+    <div  style="position:absolute;left:0px;top:auto;bottom:0px;width:95vw;height:30px;;pointer-events:auto">
+      <input type="text" id="message" style="width:90vw;">
+    </div>
   </body>
 </html>
