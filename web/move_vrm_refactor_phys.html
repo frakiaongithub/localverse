@@ -101,12 +101,38 @@
           return world;
         }
         const phys_world = initPhysics();
+        //物理判定デバッグ用
         var cannonDebugger = null;
-
         //物理判定を可視化して確認する場合はここをtrueに
-        const phys_debug = true;
+        const phys_debug = false;
 
         var player_body;//ローカルプレイヤーの物理ボディ
+        //ローカル以外のプレイヤーは物理演算しない
+        
+        //物理判定レイヤー定義
+        const PHYS_GROUP_PLAYER = 1;
+        const PHYS_GROUP_LAND = 1;
+
+        const with_grounds = {};//現在プレイヤーに接地している地形の辞書 キーは地形のid
+        //プレイヤーが地形に接触したイベントをとりたいときはここで定義
+        //引数は以下の項目を持つ辞書
+        //with 接触したボディ
+        //point 接触位置
+        //impact 接触速度
+        //grouded 接地状態
+        const onPlayerEnterCollide = (e) =>{
+          console.log("onPlayerEnterCollide",e);
+        };
+
+        //プレイヤーが地形から離れたイベントをとりたいときはここで定義
+        //引数は以下の項目を持つ辞書
+        //with 接触したボディ
+        //grouded 接地か？
+        const onPlayerLeaveCollide = (e) =>{
+          console.log("onPlayerLeaveCollide",e);
+        };
+        
+        
         const createPlayerBody = (obj) =>{
           //プレイヤーのコンテナを渡してその位置に物理ボディを作る
           //objの位置の上0.25に半径0.25の球を作ることで足元を設置させる。
@@ -120,53 +146,76 @@
           player_body = new CANNON.Body({ 
             mass: 1, 
             shape: sphereShape ,
+            collisionFilterGroup: PHYS_GROUP_PLAYER, 
+            collisionFilterMask: PHYS_GROUP_LAND , 
           });
           player_body.position.set(ox,oy+5,oz);
-          console.log(player_body);
+          player_body.angularFactor.set(0,0,0);
           phys_world.addBody(player_body);
-          window.the_body = player_body;
+
+          player_body.addEventListener('collide', (event)=> {
+            //console.log("collide",event);
+            //contact.biが自身
+            //contact.bjが対象
+            //contact.riはローカル衝突位置
+            //半径0.25の球なので
+            //contact.ri.yがマイナスなら接地と考えられる
+            //contact.getImpactVelocityAlongNormalは衝突速度
+            const contact = event.contact;
+            if(contact.ri.y <0){
+              with_grounds[contact.bj.id]=1;
+            }
+            const point = {x:0,y:0,z:0};
+            point.x = player_body.position.x + contact.ri.x;
+            point.y = player_body.position.y + contact.ri.y;
+            point.z = player_body.position.z + contact.ri.z;
+            const impact = contact.getImpactVelocityAlongNormal();
+            const num_contacts = Object.keys(with_grounds).length;
+            const grounded = (num_contacts>0);
+            onPlayerEnterCollide({with:contact.bj,point:point,impact:impact,grounded:grounded});
+            
+          });
+
+          //離脱はbodyにはイベントないのでworldでやるしかない
+          phys_world.addEventListener('endContact', (event)=> {
+            var collide_with = null;
+            if(event.bodyA===player_body ){
+              collide_with = event.bodyB;
+            }else if(event.bodyB===player_body){
+              collide_with = event.bodyA;
+            };
+            if(collide_with){
+              if(collide_with.id in with_grounds){
+                delete with_grounds[collide_with.id];
+              }
+              const num_contacts = Object.keys(with_grounds).length;
+              const grounded = (num_contacts>0);
+              onPlayerEnterCollide({with:collide_with,grounded:grounded});
+            }
+            
+          });
+          
         }
         const setPlayerVelocity = (vx,vz) =>{
           //水平移動速度設定
           //移動入力から設定
           //入力速度は上限
-          if(vx==0 && vz==0){
-            //停止は即反映
-            player_body.velocity.x= vx;
-            player_body.velocity.z= vz;
-            player_body.angularDamping=1;//角速度減衰率を1にしないと転がるので停止しない
-            return;
+          const org_vx = player_body.velocity.x;
+          const org_vz = player_body.velocity.z;
+          if(org_vx==0 && org_vz==0){
+            //静止からの初動だけ速度上書きだと動かない場合がある
+            player_body.applyImpulse(new CANNON.Vec3(vx, 0, vz));
           }else{
-            player_body.angularDamping=0;//移動する場合は角速度減衰率0にしないと引っかかる。
+            player_body.velocity.x=vx;
+            player_body.velocity.z=vz;            
           }
-          
-          //移動は速度上書きだと引っかかる場合がある(cannon-es固有の仕様？)
-          if(vx >0){
-            if(player_body.velocity.x > vx){
-              vx = 0;
-            }
-          }else if(vx <0){
-            if(player_body.velocity.x < vx){
-              vx = 0;
-            }
-          }
-          if(vz >0){
-            if(player_body.velocity.z > vz){
-              vz = 0;
-            }
-          }else if(vz <0){
-            if(player_body.velocity.z < vz){
-              vz = 0;
-            }
-          }
-          player_body.applyImpulse(new CANNON.Vec3(vx, 0, vz));
         }
         const setPlayerJump = (jump_power) =>{
           player_body.applyImpulse(new CANNON.Vec3(0, jump_power, 0));
         }
 
         const getPlayerPhysics = () =>{
-          //現在の物理ボディの位置と速度を返す
+          //現在のプレイヤーの物理ボディの位置と速度を返す
           //位置は物理のyから-0.25した値を返す
           return {
             px:player_body.position.x,
@@ -177,16 +226,18 @@
             vz:player_body.velocity.z,
           };
         }
-
+        const land_bodies = [];//地形ボディの配列
         const createStaticBody = (px,py,pz,sx,sy,sz) =>{
           //中心と大きさを渡して物理判定を作る
           //地面とか床用
           const cubeShape = new CANNON.Box(new CANNON.Vec3(sx/2, sy/2, sz/2));
           const cubeBody = new CANNON.Body({
-              mass: 0, // 0 is static
-              position: new CANNON.Vec3(px, py, pz),
+            mass: 0, // 0 is static
+            position: new CANNON.Vec3(px, py, pz),
+            collisionFilterGroup: PHYS_GROUP_LAND, 
           });
           cubeBody.addShape(cubeShape); 
+          land_bodies.push(cubeBody);
           phys_world.addBody(cubeBody); 
         }
         var phys_q = new THREE.Quaternion();
@@ -203,18 +254,88 @@
           const sz = mesh.geometry.parameters.depth*phys_s.z;          
           const cubeShape = new CANNON.Box(new CANNON.Vec3(sx/2, sy/2, sz/2));
           const cubeBody = new CANNON.Body({
-              mass: 0, // 0 is static
+            mass: 0, // 0 is static
+            collisionFilterGroup: PHYS_GROUP_LAND, 
           });
           cubeBody.addShape(cubeShape); 
           cubeBody.position.copy(phys_p); 
           cubeBody.quaternion.copy(phys_q); 
+          land_bodies.push(cubeBody);
           phys_world.addBody(cubeBody); 
         }
         
+        //2点間にある物理判定の検出クラス
+        //始点から終点にrayを投げて最初にヒットした位置と距離を得る
+        class PhysRay{
+          constructor(bodies){
+            /*
+              引数
+              bodies  判定対象とするCANNON.Bodyの配列
+            */
+            this.ray = new CANNON.Ray();
+            this.ray.skipBackfaces = true;//裏面無視
+            this.res = new CANNON.RaycastResult();
+            this.bodies = bodies;
+            this.nearest_position = new CANNON.Vec3();
+            this.nearest_normal = new CANNON.Vec3();
+            this.nearest_distance = -1;
+          }
+          castRay(from,to,mask){
+            /*
+              引数 
+              from 検出始点
+              to   検出終点
+              mask 検出対象グループ
+              戻り値
+              fromとtoの間に検出すればtrue
+              検出結果の詳細はプロパティを見る
+              this.nearest_distance 距離
+              this.nearest_position 位置
+              this.nearest_normal   法線
+            */
+            this.ray.collisionFilterMask = mask;
+            this.ray.from.copy(from);
+            this.ray.to.copy(to);
+            //intersectBodiesは複数ヒットする場合ソートしてくれない
+            //それ故intersectBodyをループで呼び出して自前で最短を取得する必要がある
+            //intersectBodiesは内部でintersectBodyを呼んでいるので効率はほとんどかわらんはず
+            var min_distance = 100000000;//十分に大きい数字
+            var found = false;
+            for(const body of this.bodies){
+              this.res.reset();
+              this.ray.intersectBody(body,this.res);
+              if(this.res.hasHit){
+                const distance = this.res.distance;
+                if(distance < min_distance){
+                  min_distance = distance;
+                  this.nearest_distance = distance;
+                  this.nearest_position.copy(this.res.hitPointWorld);
+                  this.nearest_normal.copy(this.res.hitNormalWorld);
+                }
+                found = true;
+              }
+            }
+            return found;
+          }
+        }
+        
+        const fc_ray = new PhysRay(land_bodies);
+        const fixFollowCamera = (camera,look_at_pos) =>{
+          //追尾始点の時に、地形による遮蔽があった場合は
+          //一番近い位置にカメラを移す
+          if(fc_ray.castRay(look_at_pos,camera.position,PHYS_GROUP_LAND)){
+            camera.position.copy(fc_ray.nearest_position);
+            camera.lookAt(look_at_pos);
+          }
+        }
+        
         const tickPhysics = (dt) =>{
+          
+          
+          
+          
           //物理演算をステップ実行
-          //player_body.angularVelocity.set(0,0,0);
-          phys_world.step(dt);
+          phys_world.step(1/60,dt);
           if(phys_debug){
             if(cannonDebugger===null){
               cannonDebugger = new CannonDebugger(scene, phys_world);
@@ -228,6 +349,7 @@
             player_body.position.set(0,5,0);
           }
         }
+        
         dic_ticks["physics"] = tickPhysics;
         
         //ワールド初期設定
@@ -386,7 +508,6 @@
             this.input.forward = forward;
             this.input.right = right;
             this.last_input_time = Date.now();
-            this.procVelocity(this);
           }
           //カメラ操作による向き変更時
           setInputRotate(rotate){
@@ -467,6 +588,11 @@
           
           tick(dt){
             if(this.vrm){
+            
+              //速度決定
+              this.procVelocity(this);
+
+            
               //移動解決
               this.procMove(this,dt);
               //モーション制御
@@ -741,6 +867,13 @@
             //アバターの移動速度
             this.ticks = param.ticks;
             
+            
+            if(param.fixFollowCamera){
+              this.fixFollowCamera=param.fixFollowCamera;
+            }else{
+              this.fixFollowCamera = () =>{};
+            }
+            
             //追加のキー操作の登録
             this.key_events = {};
             if(param.key_events){
@@ -947,6 +1080,10 @@
             this.look_at_pos.copy(this.avatar.getPosition());
             this.look_at_pos.y += 1;
             this.camera.lookAt(this.look_at_pos);
+ 
+            //地形遮蔽への対応
+            this.fixFollowCamera(this.camera,this.look_at_pos);
+            
           }
           tickDrag(dt){
             if(this.use_freecamera){
@@ -1110,7 +1247,8 @@
               setPlayerJump(4);
             }
 
-          }
+          },
+          fixFollowCamera:fixFollowCamera,
         });
 
 
