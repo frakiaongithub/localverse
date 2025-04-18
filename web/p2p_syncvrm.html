@@ -49,43 +49,62 @@
         //描画dom要素を指定
         const canvasElement = document.querySelector('#myCanvas')
         
-        // レンダラーを作成
-        const renderer = new THREE.WebGLRenderer({
-          canvas: canvasElement,
-        });
-        renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.setSize(window.innerWidth, window.innerHeight);
 
-        //名札等表示用のレンダラー
-        const labelRenderer = new CSS3DRenderer();
-        labelRenderer.setSize(window.innerWidth, window.innerHeight);
-        labelRenderer.domElement.style.position = "absolute";
-        labelRenderer.domElement.style.left = "0px";
-        labelRenderer.domElement.style.top = "0px";
-        labelRenderer.domElement.style.width = "100vw";
-        labelRenderer.domElement.style.height = "100vh";
-        labelRenderer.domElement.style.pointerEvents = "none";
-        document.body.appendChild(labelRenderer.domElement);
+        //3D描画関連初期化
+        const initRenderSystem = (canvasElement) =>{
+          // レンダラーを作成
+          const renderer = new THREE.WebGLRenderer({
+            canvas: canvasElement,
+          });
+          renderer.setPixelRatio(window.devicePixelRatio);
+          renderer.setSize(window.innerWidth, window.innerHeight);
+          //名札等表示用のレンダラー
+          const labelRenderer = new CSS3DRenderer();
+          labelRenderer.setSize(window.innerWidth, window.innerHeight);
+          labelRenderer.domElement.style.position = "absolute";
+          labelRenderer.domElement.style.left = "0px";
+          labelRenderer.domElement.style.top = "0px";
+          labelRenderer.domElement.style.width = "100vw";
+          labelRenderer.domElement.style.height = "100vh";
+          labelRenderer.domElement.style.pointerEvents = "none";
+          document.body.appendChild(labelRenderer.domElement);
 
-        //オブジェクト毎に更新処理はありうるのでそれを積む辞書
-        const dic_ticks = {};
-        //インスタンス破棄等で不要になったら辞書から削除する
-        //更新関数の引数は前のフレームからの経過時間
-        const clock = new THREE.Clock()
-        // 毎フレーム実行される関数
-        const animation_loop = () =>{
-          const dt = clock.getDelta();//前のフレームからの経過時間
-          //登録済みの更新関数を実行する
-          for(const key in dic_ticks){
-            dic_ticks[key](dt);
-          }
-          renderer.render(scene, camera); // 3Dレンダリング
-          labelRenderer.render(scene, camera);// 名札等レンダリング
-          requestAnimationFrame(animation_loop);
+          //オブジェクト毎に更新処理はありうるのでそれを積む辞書
+          const dic_ticks = {};
+          //インスタンス破棄等で不要になったら辞書から削除する
+          //更新関数の引数は前のフレームからの経過時間
+          const clock = new THREE.Clock()
+          // 毎フレーム実行される関数
+          const animation_loop = () =>{
+            const dt = clock.getDelta();//前のフレームからの経過時間
+            //登録済みの更新関数を実行する
+            for(const key in dic_ticks){
+              dic_ticks[key](dt);
+            }
+            renderer.render(scene, camera); // 3Dレンダリング
+            labelRenderer.render(scene, camera);// 名札等レンダリング
+            requestAnimationFrame(animation_loop);
+          };
+          
+          // カメラを作成
+          const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
+          camera.position.set(0, 2, -3);
+
+
+          //リサイズ対応
+          window.addEventListener("resize", (e) => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+          });
+          // シーンを作成
+          const scene = new THREE.Scene();
+          return [scene,camera,animation_loop,dic_ticks];
         };
+        //初期化関数を呼んで他の処理で使う変数を取得
+        const [scene,camera,animation_loop,dic_ticks] = initRenderSystem(canvasElement);
 
-        // シーンを作成
-        const scene = new THREE.Scene();
 
 
         
@@ -112,18 +131,6 @@
         };
         
         setupWorld(scene);
-
-        // カメラを作成
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight);
-        camera.position.set(0, 2, -3);
-
-        //リサイズ対応
-        window.addEventListener("resize", (e) => {
-          camera.aspect = window.innerWidth / window.innerHeight;
-          camera.updateProjectionMatrix();
-          renderer.setSize(window.innerWidth, window.innerHeight);
-          labelRenderer.setSize(window.innerWidth, window.innerHeight);
-        });
 
 
         //VRMロード処理の定義
@@ -242,7 +249,6 @@
             this.input.forward = forward;
             this.input.right = right;
             this.last_input_time = Date.now();
-            this.procVelocity(this);
           }
           //カメラ操作による向き変更時
           setInputRotate(rotate){
@@ -323,6 +329,8 @@
           
           tick(dt){
             if(this.vrm){
+              //速度決定
+              this.procVelocity(this);
               //移動解決
               this.procMove(this,dt);
               //モーション制御
@@ -400,7 +408,7 @@
               const avatar_data = this.reserved_avatar_data;
               this.reserved_avatar_data = null;
               //reserved_avatar_dataを消しているので無限ループにはならない
-              await this.setAvatar();
+              await this.setAvatar(avatar_data);
             }
           }
           disposeAvatar(){

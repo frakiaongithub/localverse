@@ -422,7 +422,9 @@
           //物理演算への登録
           createStaticBodyFromMesh(box);
           //クリック時のイベント登録
-          registInteractive(box,(obj)=>{console.log("clicked",obj);});
+          registInteractive(box,(obj)=>{
+            console.log("clicked",obj);
+          });
           
           
           /* 斜面を置く例 */
