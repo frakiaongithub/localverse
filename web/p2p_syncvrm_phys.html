@@ -369,8 +369,33 @@
         }
         dic_ticks["physics"] = tickPhysics;
 
-
-
+        
+        //オブジェクトのクリック時処理
+        const interactives = [];//クリック判定対象
+        const registInteractive = (obj,callback) =>{
+          //Object3Dを指定してクリックイベントを設定する
+          obj.onclick = callback;
+          interactives.push(obj);
+        }
+        window.addEventListener('click', (evt) => {
+          const raycaster = new THREE.Raycaster();
+          const vector = new THREE.Vector2(
+            (evt.clientX / window.innerWidth) * 2 - 1,
+            (evt.clientY / window.innerHeight) * -2 + 1
+          );
+          raycaster.setFromCamera(vector, camera);
+          const intersects = raycaster.intersectObjects(interactives);
+          if (intersects.length) {
+            var el = intersects[0].object;
+            while(!("onclick" in el)){
+              el = el.parent;
+              if(el === scene){
+                return;
+              }
+            };
+            el.onclick(el);
+          }
+        });
         
         //ワールド初期設定
         //ワールド内に静的なものを追加したい場合はここで記述する
@@ -396,6 +421,9 @@
           scene.add(box);
           //物理演算への登録
           createStaticBodyFromMesh(box);
+          //クリック時のイベント登録
+          registInteractive(box,(obj)=>{console.log("clicked",obj);});
+          
           
           /* 斜面を置く例 */
           const geometry2 = new THREE.BoxGeometry(2, 0.1, 10);//形状
