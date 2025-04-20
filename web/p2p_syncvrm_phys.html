@@ -1359,7 +1359,7 @@
                   if(id in avatars){
                     const avatar = avatars[id];
                     if(avatar.hasMotion(info.motion)){
-                      avatar.playMotion();
+                      avatar.playMotion(info.motion);
                     }else{
                       const conn = connections[id];
                       const msg = {"mode":"req_motion","motion":info.motion};
@@ -2324,6 +2324,11 @@
         const sendAvatar = async (id) =>{
           if(!local_avatar_data){
             //アバターデータなしなら通知しない
+            return;
+          }
+          if(typeof(local_avatar_data)==="string"){
+            //デフォルトアバターなので送信不要
+            console.log(local_avatar_data);
             return;
           }
           prepareSendFile(self_id,id,local_avatar_name,local_avatar_data,"avatar");
