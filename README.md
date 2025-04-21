@@ -3,6 +3,16 @@
 
 # メモ
 
+## 記事
+このリポジトリは以下の記事で使ったコードの置き場所です。
+https://zenn.dev/velserm/articles/localverse_0001
+https://zenn.dev/velserm/articles/localverse_0002
+https://zenn.dev/velserm/articles/localverse_0003
+https://zenn.dev/velserm/articles/localverse_0004
+https://zenn.dev/velserm/articles/localverse_0005
+
+
+
 ## セキュリティ
 個人での実験用なので基本考慮されていません。
 
